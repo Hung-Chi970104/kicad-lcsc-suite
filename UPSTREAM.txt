@@ -1,0 +1,2 @@
+bouni/kicad-jlcpcb-tools fa758809e0438ec316e474deb8506257a9fee310
+uPesy/easyeda2kicad.py fff10a38619963d7cb1c57d779655a9ea4572e95
