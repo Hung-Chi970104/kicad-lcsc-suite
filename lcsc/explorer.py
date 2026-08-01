@@ -48,7 +48,15 @@ PAGE_SIZE = 100
 class LcscExplorerDialog(wx.Dialog):
     """Search, inspect, import and assign LCSC parts."""
 
-    def __init__(self, parent, initial_keyword: str = "", references=None):
+    def __init__(self, parent, parts=None, initial_keyword: str = "", references=None):
+        """Open the explorer for ``parts``.
+
+        ``parts`` is the ``{reference: search string}`` mapping the main
+        window builds from the current footprint selection — the same shape
+        the superseded part selector took, so this is a drop-in replacement
+        for it. ``references``/``initial_keyword`` remain accepted for the
+        toolbar entry point, which has no per-footprint values.
+        """
         super().__init__(
             parent,
             id=wx.ID_ANY,
@@ -58,7 +66,8 @@ class LcscExplorerDialog(wx.Dialog):
             style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER | wx.MAXIMIZE_BOX,
         )
         self.parent = parent
-        self.references = list(references or [])
+        self.parts = dict(parts or {})
+        self.references = list(references or self.parts.keys())
         self.logger = logging.getLogger(__name__)
 
         self._hits: List[api.SearchHit] = []
@@ -70,12 +79,45 @@ class LcscExplorerDialog(wx.Dialog):
         self._search_token = 0
         self._detail_token = 0
 
+        # A modeless wx.Dialog hides rather than destroys on close; override
+        # so the main window's singleton reference is actually released.
+        self.Bind(wx.EVT_CLOSE, self._on_close)
+
         self._build_ui()
         self.Centre(wx.BOTH)
 
-        if initial_keyword:
-            self.keyword.SetValue(initial_keyword)
+        keyword = initial_keyword or self.common_value(self.parts)
+        if keyword:
+            self.keyword.SetValue(keyword)
             self._start_search()
+
+    @staticmethod
+    def common_value(parts) -> str:
+        """Return the shared search string when every selected part agrees."""
+        values = {v for v in (parts or {}).values() if v}
+        return values.pop() if len(values) == 1 else ""
+
+    def update_for(self, parts) -> None:
+        """Re-target an already-open explorer at a new footprint selection.
+
+        Invoked when the user activates another footprint while this window
+        is open, instead of spawning a second one.
+        """
+        self.parts = dict(parts or {})
+        self.references = list(self.parts.keys())
+        keyword = self.common_value(self.parts)
+        self.keyword.ChangeValue(keyword)
+        self._update_target_label()
+        if keyword:
+            self._start_search()
+        else:
+            self._update_actions()
+
+    def _on_close(self, _event) -> None:
+        """Release the main window's reference, then destroy."""
+        if getattr(self.parent, "_part_selector", None) is self:
+            self.parent._part_selector = None
+        self.Destroy()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -106,7 +148,23 @@ class LcscExplorerDialog(wx.Dialog):
 
         self.SetSizer(root)
         self.Layout()
+        self._update_target_label()
         self._update_actions()
+
+    def _update_target_label(self) -> None:
+        """Show which footprints an assign would be applied to."""
+        if not self.references:
+            self.target_label.SetLabel(
+                "No footprint selected — Import still works; select "
+                "footprints in the main window to enable Assign."
+            )
+            return
+        shown = ", ".join(self.references[:12])
+        if len(self.references) > 12:
+            shown += f", … (+{len(self.references) - 12})"
+        self.target_label.SetLabel(
+            f"Assigning to {len(self.references)} footprint(s): {shown}"
+        )
 
     def _build_search_bar(self) -> wx.Sizer:
         """Keyword entry, library-type filter and stock toggle."""
@@ -241,6 +299,11 @@ class LcscExplorerDialog(wx.Dialog):
     def _build_action_bar(self) -> wx.Sizer:
         """Import / assign / external-link buttons and the library path."""
         outer = wx.BoxSizer(wx.VERTICAL)
+
+        # Which footprints an assign will land on. Shown because this window
+        # can be re-targeted while open, so the selection is not obvious.
+        self.target_label = wx.StaticText(self, label="")
+        outer.Add(self.target_label, 0, wx.LEFT | wx.BOTTOM, 6)
 
         lib_row = wx.BoxSizer(wx.HORIZONTAL)
         lib_row.Add(
