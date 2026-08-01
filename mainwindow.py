@@ -72,7 +72,6 @@ from .kicad_drc import DRCViolationCounter
 from .library import Library, LibraryState
 from .partdetails import PartDetailsDialog
 from .partmapper import PartMapperManagerDialog
-from .partselector import PartSelectorDialog
 from .schematicexport import SchematicExport
 from .settings import SettingsDialog
 from .store import Store
@@ -173,7 +172,7 @@ class JLCPCBTools(wx.Dialog):
             self.settings.get("general", {}).get("select_alike_auto", False)
         )
         self.select_alike_in_progress = False
-        # Singleton reference for the modeless PartSelectorDialog. Re-invoking
+        # Singleton reference for the modeless LcscExplorerDialog. Re-invoking
         # "Select Part" while one is open re-targets it instead of opening a
         # second window.
         self._part_selector = None
@@ -1416,15 +1415,23 @@ class JLCPCBTools(wx.Dialog):
             if simplified_footprint := simplify_footprint_name(footprint):
                 value += f" {simplified_footprint}"
             selection[ref] = value
+        self._open_explorer(selection)
+
+    def _open_explorer(self, selection):
+        """Open (or re-target) the single LCSC Explorer window.
+
+        Every part-picking entry point funnels through here — double-clicking
+        a row, the "Assign LCSC number" button, and the toolbar icon — so
+        there is one search UI rather than two with different behaviour.
+        """
         if self._part_selector is not None:
-            # Already open — re-target it at the new selection rather than
-            # spawning a second window.
+            # Already open — re-target it rather than spawning a second one.
             self._part_selector.update_for(selection)
             self._part_selector.Raise()
             return
-        # The selector clears self._part_selector itself from its EVT_CLOSE
-        # handler before it destroys — no need for a destroy hook here.
-        self._part_selector = PartSelectorDialog(self, selection)
+        # The dialog clears self._part_selector from its own EVT_CLOSE
+        # handler before destroying — no destroy hook needed here.
+        self._part_selector = LcscExplorerDialog(self, selection)
         self._part_selector.Show()
         self._part_selector.Raise()
 
@@ -1443,23 +1450,31 @@ class JLCPCBTools(wx.Dialog):
         return os.path.join(os.path.expanduser("~"), "Documents", "KiCad", "lcsc-lib")
 
     def open_lcsc_explorer(self, *_):
-        """Open the LCSC Explorer, pre-seeded from the current selection."""
-        references = []
-        keyword = ""
+        """Open the LCSC Explorer from the toolbar.
+
+        Seeds the search from the already-assigned LCSC number when the
+        selected footprints agree on one; otherwise falls back to the same
+        value + package keyword that double-clicking a row produces.
+        """
+        selection = {}
         for item in self.footprint_list.GetSelections():
-            references.append(self.partlist_data_model.get_reference(item))
-            if not keyword:
-                keyword = self.partlist_data_model.get_value(item)
-        existing = {
+            ref = self.partlist_data_model.get_reference(item)
+            value = self.partlist_data_model.get_value(item)
+            footprint = self.partlist_data_model.get_footprint(item)
+            if simplified_footprint := simplify_footprint_name(footprint):
+                value += f" {simplified_footprint}"
+            selection[ref] = value
+
+        assigned = {
             self.partlist_data_model.get_lcsc(item)
             for item in self.footprint_list.GetSelections()
         }
-        existing.discard("")
-        if len(existing) == 1:
-            keyword = existing.pop()
+        assigned.discard("")
+        if len(assigned) == 1:
+            lcsc = assigned.pop()
+            selection = dict.fromkeys(selection, lcsc)
 
-        dialog = LcscExplorerDialog(self, initial_keyword=keyword, references=references)
-        dialog.Show()
+        self._open_explorer(selection)
 
     def import_all_lcsc_libs(self, *_):
         """Import symbol/footprint/3D for every LCSC part assigned on the board."""
