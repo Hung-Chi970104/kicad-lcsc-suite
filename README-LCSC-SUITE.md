@@ -108,30 +108,81 @@ the plugin needs is missing.
 
 ## Installing
 
+### 1. Clone
+
+Clone anywhere and **keep the clone** — the installer *links* to it rather
+than copying, so this checkout is the live plugin.
+
+```bash
+git clone https://github.com/Hung-Chi970104/kicad-lcsc-suite.git
+cd kicad-lcsc-suite
+```
+
+### 2. Run the installer
+
 macOS / Linux:
 
 ```bash
-cd ~/Research/kicad-lcsc-suite
 ./install.sh                 # newest KiCad found
-./install.sh 10.0            # a specific version
+./install.sh 10.0            # a specific KiCad version
+./install.sh --list          # show what it detected, change nothing
+./install.sh --dir <path>    # explicit plugin directory
 ./install.sh --uninstall
 ```
 
-Windows (PowerShell, no admin needed — it makes a junction):
+Windows (PowerShell, **no admin needed** — it creates a directory junction,
+not a symlink):
 
 ```powershell
-cd $HOME\Research\kicad-lcsc-suite
 .\install.ps1
 .\install.ps1 -Version 10.0
 .\install.ps1 -Uninstall
 ```
 
-Both link rather than copy, so `git pull` updates the installed plugin on
-either machine with no reinstall.
+If PowerShell blocks the script, allow it for that session only:
 
-Restart KiCad, then: **PCB editor → Tools → External Plugins → LCSC Suite**.
-It is named "LCSC Suite" so it can coexist with an upstream "JLCPCB Tools"
-install.
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+The installer locates KiCad's plugin directory itself
+(`~/Documents/KiCad/<ver>/scripting/plugins` on macOS and Windows,
+`$XDG_DATA_HOME/kicad/<ver>/scripting/plugins` on Linux) and links this
+checkout in as `kicad_lcsc_suite`. Because it links rather than copies,
+**`git pull` updates the installed plugin on every machine — no reinstall.**
+
+### 3. Restart KiCad
+
+Then: **PCB editor → Tools → External Plugins → LCSC Suite**.
+
+Named "LCSC Suite" so it can sit alongside an upstream "JLCPCB Tools"
+install without producing two identical toolbar entries.
+
+### 4. Confirm it works (optional)
+
+```bash
+# macOS
+/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 selfcheck.py
+# Windows
+& "C:\Program Files\KiCad\10.0\bin\python.exe" selfcheck.py
+# Linux
+python3 selfcheck.py
+```
+
+### Manual install (no git)
+
+Copy or extract this directory into KiCad's plugin folder under a name that
+is a valid Python identifier — **`kicad_lcsc_suite`, underscores, not
+hyphens** — then restart KiCad.
+
+### Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| Plugin missing from the menu | Directory name contains hyphens, or KiCad was not restarted |
+| Previews blank, rest works | wxPython without `wx.svg` — run `selfcheck.py` |
+| Stock shows `?` | No CA trust store — run `selfcheck.py`, or set `LCSC_CA_BUNDLE` |
+| Imported library not in the symbol chooser | KiCad caches lib-tables at startup; restart it |
 
 ## Using it
 
@@ -198,3 +249,31 @@ UPSTREAM.txt           pinned upstream commits
 Everything is Python 3.9 (what KiCad bundles) and uses only `wx`, `certifi`
 and the standard library. `CLAUDE.md` in this directory is upstream's own
 contributor guidance and still applies to the forked files.
+
+## Licensing — read before making this public
+
+This repository combines two upstreams under **different** licenses:
+
+| Component | Upstream | License |
+|---|---|---|
+| Plugin base (`mainwindow.py`, `partselector.py`, `fabrication.py`, …) | [Bouni/kicad-jlcpcb-tools][bouni] | MIT (`LICENSE`) |
+| `lib/easyeda2kicad/` (vendored) | [uPesy/easyeda2kicad.py][e2k] | **AGPL-3.0** (`lib/easyeda2kicad/LICENSE`) |
+| `lcsc/`, `selfcheck.py`, installers | this repo | see below |
+
+The AGPL is the binding constraint. **While this repository stays private
+and you only run the plugin yourself, nothing is triggered** — the AGPL's
+obligations attach to *distribution* and to *network-service* use, neither
+of which applies to personal use of a private checkout.
+
+If you ever make this repo public, publish a release, or let others use it
+over a network, the combined work must be offered under **AGPL-3.0**, with
+complete corresponding source. Two ways to stay clean:
+
+1. **Relicense the whole thing AGPL-3.0** — simplest, and compatible, since
+   MIT code can be included in an AGPL work.
+2. **Un-vendor easyeda2kicad** — drop `lib/easyeda2kicad/`, make it a pip
+   dependency the user installs, and keep this repo MIT. Removes the
+   "no dependencies to install" property.
+
+Upstream commit pins are in `UPSTREAM.txt`. Both upstream licenses are kept
+in the tree; do not delete them.

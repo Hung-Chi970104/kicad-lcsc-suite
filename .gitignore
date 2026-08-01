@@ -1,4 +1,41 @@
+# Python
 __pycache__/
 *.py[cod]
-.DS_Store
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+.env
+.venv
+env/
+venv/
+ENV/
+
+# --- Plugin runtime data (downloaded/generated, never committed) ------------
+# jlcpcb/ holds the JLCPCB parts database the plugin downloads on first use.
+# current-parts-fts5.db alone is ~750 MB, far beyond GitHub's 100 MB limit.
+# Delete the directory to force a fresh download.
+jlcpcb/
+corrections/
+dev/
+/settings.json
+
+# Lib-table backups this plugin writes before editing a KiCad table
 *.lcsc-suite.bak
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
+CLAUDE.local.md
+
+# NOTE: upstream's .gitignore lists `lib/`, aimed at virtualenv lib dirs.
+# This fork deliberately VENDORS code there — lib/easyeda2kicad/ and
+# lib/packaging/ are tracked on purpose and must NOT be ignored.
