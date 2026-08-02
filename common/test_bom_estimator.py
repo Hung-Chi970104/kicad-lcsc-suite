@@ -398,7 +398,6 @@ def test_build_standard_mode_context_combines_policy_signals():
     context = build_standard_mode_context(
         manual_enabled=False,
         board_count=50,
-        populated_refs={"R1", "R2"},
         populated_sides={"top", "bottom"},
         smt_populated_sides={"top"},
         standard_part_refs={"R1"},
@@ -414,29 +413,48 @@ def test_build_standard_mode_context_combines_policy_signals():
     assert context["smt_populated_sides"] == 1
 
 
-def test_build_standard_mode_context_highlights_standard_parts_and_multiside_refs():
-    """Highlight refs include standard parts and all populated refs for multi-side boards."""
+def test_build_standard_mode_context_highlights_only_culpable_parts():
+    """Only individually-responsible parts are highlighted, never the whole board.
+
+    A two-sided board makes every populated part *affected*, but none of them
+    *responsible* — highlighting all of them painted the entire part list red
+    and conveyed nothing. Board-level reasons belong in the summary line.
+    """
     context = build_standard_mode_context(
         manual_enabled=False,
         board_count=5,
-        populated_refs={"R1", "R2", "R3"},
         populated_sides={"top", "bottom"},
         smt_populated_sides={"top", "bottom"},
         standard_part_refs={"R2"},
     )
 
-    assert context["trigger_references"] == {"R1", "R2", "R3"}
+    assert context["signals"]["multi_side_populated"] is True
+    assert context["board_standard"] is True
+    assert context["trigger_references"] == {"R2"}
 
     single_side_context = build_standard_mode_context(
         manual_enabled=False,
         board_count=5,
-        populated_refs={"R1", "R2", "R3"},
         populated_sides={"top"},
         smt_populated_sides={"top"},
         standard_part_refs={"R2"},
     )
 
     assert single_side_context["trigger_references"] == {"R2"}
+
+
+def test_build_standard_mode_context_highlights_nothing_for_board_level_triggers():
+    """A board Standard for board-level reasons alone highlights no part."""
+    context = build_standard_mode_context(
+        manual_enabled=True,
+        board_count=100,
+        populated_sides={"top", "bottom"},
+        smt_populated_sides={"top", "bottom"},
+        standard_part_refs=set(),
+    )
+
+    assert context["board_standard"] is True
+    assert context["trigger_references"] == set()
     assert (
         format_part_bom_price_label(
             {"lcsc": "C1", "exclude_from_bom": 0},

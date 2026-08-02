@@ -39,6 +39,8 @@ from .events import (
     EVT_DOWNLOAD_STARTED_EVENT,
     EVT_LOGBOX_APPEND_EVENT,
     EVT_MESSAGE_EVENT,
+    EVT_PART_DETAILS_COMPLETED_EVENT,
+    EVT_PART_DETAILS_PROGRESS_EVENT,
     EVT_POPULATE_FOOTPRINT_LIST_EVENT,
     EVT_UNZIP_COMBINING_PROGRESS_EVENT,
     EVT_UNZIP_COMBINING_STARTED_EVENT,
@@ -50,8 +52,12 @@ from .events import (
     AssemblyEnrichmentProgressEvent,
     BomDataChangedEvent,
     LogboxAppendEvent,
+    PartDetailsCompletedEvent,
+    PartDetailsProgressEvent,
 )
 from .fabrication import Fabrication
+from .lcsc import api as lcsc_api
+from .lcsc import details as lcsc_details
 from .lcsc.explorer import LcscExplorerDialog
 from .lcsc.importer import DEFAULT_LIB_NAME, LcscImporter, is_inside
 from .footprint_helpers import (
@@ -72,7 +78,12 @@ from .kicad_drc import DRCViolationCounter
 from .library import Library, LibraryState
 from .partdetails import PartDetailsDialog
 from .partmapper import PartMapperManagerDialog
-from .schematicexport import SchematicExport
+from .schematicexport import (
+    SchematicExport,
+    find_root_schematic,
+    is_open_in_editor,
+)
+from .schematicimport import diff_against_board, read_schematic
 from .settings import SettingsDialog
 from .store import Store
 
@@ -98,6 +109,7 @@ ID_SAVE_MAPPINGS = 15
 ID_EXPORT_TO_SCHEMATIC = 16
 ID_LCSC_EXPLORER = 17
 ID_LCSC_IMPORT_ALL = 18
+ID_IMPORT_FROM_SCHEMATIC = 19
 ID_CONTEXT_MENU_COPY_LCSC = wx.NewIdRef()
 ID_CONTEXT_MENU_PASTE_LCSC = wx.NewIdRef()
 ID_CONTEXT_MENU_ADD_ROT_BY_REFERENCE = wx.NewIdRef()
@@ -105,6 +117,68 @@ ID_CONTEXT_MENU_ADD_ROT_BY_PACKAGE = wx.NewIdRef()
 ID_CONTEXT_MENU_ADD_ROT_BY_NAME = wx.NewIdRef()
 ID_CONTEXT_MENU_FIND_MAPPING = wx.NewIdRef()
 ID_CONTEXT_MENU_ADD_MAPPING = wx.NewIdRef()
+
+#: Seconds between part-detail requests. Matches the pacing the assembly
+#: enrichment provider already uses: both endpoints are unofficial and answer
+#: a burst from a 200-part board with rate limiting rather than data.
+PART_DETAIL_REQUEST_INTERVAL = 1.0
+
+#: How long the selection has to settle before the rows under it are
+#: refreshed. Arrow-keying down the part list fires one selection event per
+#: row, so without a debounce that is one API round trip per keystroke.
+SELECTION_REFRESH_DELAY_MS = 400
+
+#: Distinct LCSC numbers a selection may span before the refresh is skipped.
+#: Clicking a row means "tell me about this part"; selecting the whole board
+#: means something else, and would queue one paced request per part behind it.
+#: "Auto-select alike" stays well inside this — every row it adds shares the
+#: one LCSC number.
+SELECTION_REFRESH_MAX_PARTS = 8
+
+#: How long a forced refresh suppresses the next one for the same part. Set to
+#: the API layer's own cache lifetime because below it there is nothing new to
+#: learn: :mod:`lcsc.api` would answer from ``_cache`` and return the very
+#: figure already on screen.
+SELECTION_REFRESH_COOLDOWN_SECONDS = lcsc_api.CACHE_TTL_SECONDS
+
+#: wx name of the main dialog. Looking the window up by name rather than by
+#: keeping a Python reference survives KiCad's "Refresh Plugins", which
+#: re-imports this module and would leave any module-level reference behind.
+MAIN_WINDOW_NAME = "kicad_lcsc_suite_main_window"
+
+#: How many references a confirmation dialog lists before summarising the
+#: rest. A 200-part board can change every row at once, and a message box that
+#: tall is taller than the screen — and unreadable long before that.
+CONFIRM_SAMPLE_SIZE = 12
+
+
+def _sample(lines, limit: int = CONFIRM_SAMPLE_SIZE) -> str:
+    """Indent up to ``limit`` lines for a confirmation dialog."""
+    shown = list(lines)[:limit]
+    text = "\n".join(f"    {line}" for line in shown)
+    remaining = len(lines) - len(shown)
+    if remaining:
+        text += f"\n    ... and {remaining} more"
+    return text
+
+
+def find_open_main_window():
+    """Return the already-open main dialog, or None if there is not one.
+
+    KiCad calls ``ActionPlugin.Run()`` on every toolbar click, so without this
+    a second click builds a second window: two dialogs writing the same
+    project database, fetching the same parts twice, and disagreeing about
+    what is assigned.
+    """
+    for window in wx.GetTopLevelWindows():
+        try:
+            if window.GetName() == MAIN_WINDOW_NAME and not window.IsBeingDeleted():
+                return window
+        except RuntimeError:
+            # Wrapper for a C++ object that has already been deleted; wx has
+            # not reaped it from the top-level list yet.
+            continue
+    return None
 
 
 class KicadProvider:
@@ -129,13 +203,15 @@ class JLCPCBTools(wx.Dialog):
             pos=wx.DefaultPosition,
             size=wx.Size(1300, 800),
             style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER | wx.MAXIMIZE_BOX,
+            name=MAIN_WINDOW_NAME,
         )
         self.pcbnew = kicad_provider.get_pcbnew()
         self.window = wx.GetTopLevelParent(self)
         self.SetSize(HighResWxSize(self.window, wx.Size(1300, 800)))
         self.scale_factor = GetScaleFactor(self.window)
-        self.project_path = os.path.split(self.pcbnew.GetBoard().GetFileName())[0]
-        self.board_name = os.path.split(self.pcbnew.GetBoard().GetFileName())[1]
+        self.board_file = self.pcbnew.GetBoard().GetFileName()
+        self.project_path = os.path.split(self.board_file)[0]
+        self.board_name = os.path.split(self.board_file)[1]
         self.schematic_name = f"{self.board_name.split('.')[0]}.kicad_sch"
         self.hide_bom_parts = False
         self.hide_pos_parts = False
@@ -183,6 +259,36 @@ class JLCPCBTools(wx.Dialog):
         # mid-flight reassignment of a reference cannot have stale metadata
         # written back to it.
         self.assembly_enrichment_generation = 0
+        # Same guard for the part-detail refresher, which resolves Type/Stock/
+        # LCSC Params from the API rather than a bulk download.
+        self.pending_part_details = set()
+        self.part_detail_generation = 0
+        # Selection-driven refresh. The detail cache holds a row for a day,
+        # which is what lets the Stock column say something useful offline —
+        # but it also means a figure can be a day out of date with nothing on
+        # screen to admit it, and JLC restocks a common part by millions
+        # overnight. Selecting a row is the cheapest signal there is that
+        # *this* part is the one being looked at, so its row is refetched
+        # then, cache age ignored. ``{lcsc: monotonic timestamp}`` of the last
+        # such refetch, to keep clicking back and forth off the endpoints.
+        self._forced_part_details = {}
+        self._selection_refresh_timer = wx.Timer(self)
+        self.Bind(
+            wx.EVT_TIMER,
+            self._on_selection_refresh_timer,
+            self._selection_refresh_timer,
+        )
+        # Schematic sync state. Neither direction ever runs on its own — the
+        # board and the schematic only meet when the user presses "From
+        # schematic" or "To schematic" — so this is only used to notice on
+        # close that assignments were never written anywhere.
+        #
+        # References the user explicitly cleared are tracked separately from
+        # the store: a reference simply *missing* an LCSC number must never
+        # wipe the schematic (the board can lag behind it), whereas one the
+        # user just cleared must.
+        self._schematic_cleared_refs = set()
+        self._schematic_sync_pending = False
         # Latch used by on_bom_data_changed to coalesce a burst of mutations
         # into a single recompute. SQLite commits are synchronous, so async
         # event dispatch is safe to defer here.
@@ -256,6 +362,28 @@ class JLCPCBTools(wx.Dialog):
 
         self.upper_toolbar.AddStretchableSpace()
 
+        # Board <-> schematic lives up here rather than on the per-part
+        # toolbar: it acts on the whole project, and the right-hand toolbar is
+        # already long enough that a button at its end is scrolled out of
+        # sight on a default-sized window.
+        self.import_schematic_button = self.upper_toolbar.AddTool(
+            ID_IMPORT_FROM_SCHEMATIC,
+            "From schematic",
+            loadBitmapScaled("mdi-database-import-outline.png", self.scale_factor),
+            "Copy the LCSC numbers in the schematic symbols onto the "
+            "footprints, overwriting the numbers on the board",
+        )
+
+        self.export_schematic_button = self.upper_toolbar.AddTool(
+            ID_EXPORT_TO_SCHEMATIC,
+            "To schematic",
+            loadBitmapScaled("mdi-database-export-outline.png", self.scale_factor),
+            "Write the LCSC numbers assigned here into the schematic symbols, "
+            "overwriting the numbers in the schematic",
+        )
+
+        self.upper_toolbar.AddSeparator()
+
         self.correction_button = self.upper_toolbar.AddTool(
             ID_CORRECTIONS,
             "Corrections",
@@ -292,9 +420,11 @@ class JLCPCBTools(wx.Dialog):
 
         self.download_button = self.upper_toolbar.AddTool(
             ID_DOWNLOAD,
-            "Download",
+            "Offline DB",
             loadBitmapScaled("mdi-cloud-download-outline.png", self.scale_factor),
-            "Download latest JLCPCB parts database",
+            "Optional: download the full JLCPCB parts database (~750 MB) for "
+            "offline use. Part details are fetched from the API and cached "
+            "locally, so this is not needed for normal work.",
         )
 
         self.settings_button = self.upper_toolbar.AddTool(
@@ -313,6 +443,8 @@ class JLCPCBTools(wx.Dialog):
         self.Bind(wx.EVT_TOOL, self.manage_settings, self.settings_button)
         self.Bind(wx.EVT_TOOL, self.open_lcsc_explorer, self.lcsc_explorer_button)
         self.Bind(wx.EVT_TOOL, self.import_all_lcsc_libs, self.lcsc_import_all_button)
+        self.Bind(wx.EVT_TOOL, self.import_from_schematic, self.import_schematic_button)
+        self.Bind(wx.EVT_TOOL, self.export_to_schematic, self.export_schematic_button)
 
         # ---------------------------------------------------------------------
         # ------------------ Right side toolbar List --------------------------
@@ -429,16 +561,6 @@ class JLCPCBTools(wx.Dialog):
             "Save all mappings",
         )
 
-        self.export_schematic_button = self.right_toolbar.AddTool(
-            ID_EXPORT_TO_SCHEMATIC,
-            "Export to schematic",
-            loadBitmapScaled(
-                "mdi-application-export.png",
-                self.scale_factor,
-            ),
-            "Export mappings to schematic",
-        )
-
         self.Bind(wx.EVT_TOOL, self.select_part, self.select_part_button)
         self.Bind(wx.EVT_TOOL, self.remove_lcsc_number, self.remove_lcsc_number_button)
         self.Bind(wx.EVT_TOOL, self.toggle_select_alike, self.select_alike_button)
@@ -449,7 +571,6 @@ class JLCPCBTools(wx.Dialog):
         self.Bind(wx.EVT_TOOL, self.OnBomHide, self.hide_bom_button)
         self.Bind(wx.EVT_TOOL, self.OnPosHide, self.hide_pos_button)
         self.Bind(wx.EVT_TOOL, self.save_all_mappings, self.save_all_button)
-        self.Bind(wx.EVT_TOOL, self.export_to_schematic, self.export_schematic_button)
 
         self.right_toolbar.ToggleTool(ID_SELECT_ALIKE, self.auto_select_alike)
 
@@ -502,8 +623,18 @@ class JLCPCBTools(wx.Dialog):
         type = self.footprint_list.AppendTextColumn(
             "Type", 4, width=100, mode=dv.DATAVIEW_CELL_INERT, align=wx.ALIGN_CENTER
         )
+        # Named for the warehouse it reports on. This figure comes from the JLC
+        # assembly detail (or the JLC parts-library search), which is what JLC
+        # will place on a board — never LCSC retail, a separate warehouse whose
+        # count routinely disagrees. The explorer's two columns spell the same
+        # distinction "JLC assembly" / "LCSC retail"; a bare "Stock" here left
+        # it to be guessed at.
         stock = self.footprint_list.AppendTextColumn(
-            "Stock", 5, width=100, mode=dv.DATAVIEW_CELL_INERT, align=wx.ALIGN_CENTER
+            "JLC Stock",
+            5,
+            width=110,
+            mode=dv.DATAVIEW_CELL_INERT,
+            align=wx.ALIGN_CENTER,
         )
         bom = self.footprint_list.AppendIconTextColumn(
             "BOM", 6, width=50, mode=dv.DATAVIEW_CELL_INERT
@@ -659,6 +790,8 @@ class JLCPCBTools(wx.Dialog):
         self.Bind(EVT_UNZIP_EXTRACTING_COMPLETED_EVENT, self.unzip_extracting_completed)
 
         self.Bind(EVT_LOGBOX_APPEND_EVENT, self.logbox_append)
+        self.Bind(EVT_PART_DETAILS_PROGRESS_EVENT, self.on_part_details_progress)
+        self.Bind(EVT_PART_DETAILS_COMPLETED_EVENT, self.on_part_details_completed)
         self.Bind(
             EVT_ASSEMBLY_ENRICHMENT_PROGRESS_EVENT,
             self.on_assembly_enrichment_progress,
@@ -695,13 +828,17 @@ class JLCPCBTools(wx.Dialog):
         self.init_data()
 
     def init_data(self):
-        """Initialize the library and populate the main window."""
+        """Initialize the library and populate the main window.
+
+        Notably absent: the automatic parts-database download this used to
+        kick off whenever the file was missing. Part details now come from the
+        API with a local cache behind them, so a first run no longer costs a
+        three-quarter-gigabyte download before the window is usable. The
+        Download button is still there for anyone who wants offline search.
+        """
         self.init_library()
         self.init_fabrication()
-        if self.library.state == LibraryState.UPDATE_NEEDED:
-            self.library.update()
-        else:
-            self.init_store()
+        self.init_store()
         self.library.create_mapping_table()
 
         self.logger.debug("kicad version: %s", kicad_pcbnew.GetBuildVersion())
@@ -719,14 +856,49 @@ class JLCPCBTools(wx.Dialog):
     def quit_dialog(self, *_):
         """Destroy dialog on close."""
         self.logger.info("quit_dialog()")
+        # Before anything else: a one-shot still pending here would fire on a
+        # destroyed window, and a wx.Timer outlives the Destroy() below.
+        self._selection_refresh_timer.Stop()
+        self._offer_schematic_export_on_close()
         root = logging.getLogger()
         with suppress(AttributeError):
             root.removeHandler(self.logging_handler1)
         with suppress(AttributeError):
             root.removeHandler(self.logging_handler2)
 
+        # Close the explorer through its own handler rather than letting it be
+        # torn down as a child. That handler is what cancels its in-flight
+        # LCSC fetches; destroyed silently, those threads keep running against
+        # a window that no longer exists.
+        if self._part_selector:
+            with suppress(RuntimeError):
+                self._part_selector.Close()
+            self._part_selector = None
+
         self.Destroy()
         self.EndModal(0)
+
+    def _offer_schematic_export_on_close(self):
+        """Last chance to get the assignments into the schematic.
+
+        Nothing is written without being asked — that is the whole point of
+        the two buttons. But a removal only lives in memory until it is
+        exported (see ``_schematic_cleared_refs``), so closing on unexported
+        changes silently loses it. Ask rather than let that happen quietly.
+        """
+        if not self._schematic_sync_pending:
+            return
+        answer = wx.MessageBox(
+            "The LCSC numbers you changed here are on the footprints only. "
+            "The Symbol Fields Table, the schematic BOM and the next "
+            "'Update PCB from Schematic' all read the symbols instead, so "
+            "they will not see them.\n\n"
+            "Write them into the schematic now?",
+            "To schematic",
+            style=wx.YES_NO | wx.ICON_QUESTION,
+        )
+        if answer == wx.YES:
+            self.sync_schematic(interactive=True, confirm=False)
 
     def init_library(self):
         """Initialize the parts library."""
@@ -745,8 +917,11 @@ class JLCPCBTools(wx.Dialog):
                 meta.size,
             )
         else:
+            # Not an error any more: details come from the API and the offline
+            # catalogue is opt-in, so say what the state *is* rather than
+            # reporting a missing file the user never asked for.
             self.SetTitle(
-                f"JLCPCB Tools [ {getVersion()} ] | Last database update: No DB found",
+                f"JLCPCB Tools [ {getVersion()} ] | Live LCSC data (no offline DB)",
             )
             self.logger.debug("JLCPCB version %s, no parts db info found", getVersion())
 
@@ -755,6 +930,7 @@ class JLCPCBTools(wx.Dialog):
         self.store = Store(self, self.project_path, self.pcbnew.GetBoard())
         if self.library.state == LibraryState.INITIALIZED:
             self.populate_footprint_list()
+            self.start_part_detail_refresh()
             self.start_assembly_enrichment()
             self.recompute_bom_estimate()
 
@@ -858,16 +1034,23 @@ class JLCPCBTools(wx.Dialog):
         """Assign a selected LCSC number to parts."""
         details = self.library.get_part_details(e.lcsc)
         params = params_for_part(details)
+        # The explorer reports an unresolved stock figure as None, which the
+        # store keeps distinct from a confirmed zero.
+        stock = getattr(e, "stock", None)
         for reference in e.references:
             self.store.set_lcsc(reference, e.lcsc)
-            self.store.set_stock(reference, int(e.stock))
+            self.store.set_stock(reference, None if stock is None else int(stock))
             board = self.pcbnew.GetBoard()
             fp = board.FindFootprintByReference(reference)
             set_lcsc_value(fp, e.lcsc)
-            self.partlist_data_model.set_lcsc(
-                reference, e.lcsc, e.type, e.stock, params
-            )
+            self.partlist_data_model.set_lcsc(reference, e.lcsc, e.type, stock, params)
         self.start_assembly_enrichment(e.references)
+        # The explorer supplied type and stock, but not the description or
+        # category the LCSC Params column is derived from. Fetch those unless
+        # the cache already has them.
+        self.start_part_detail_refresh(e.references)
+        self._schematic_cleared_refs.difference_update(e.references)
+        self.mark_schematic_out_of_date()
         wx.PostEvent(self, BomDataChangedEvent(source="assign_parts"))
 
     def _set_bom_estimator_board_count(self, value: int) -> None:
@@ -1054,6 +1237,158 @@ class JLCPCBTools(wx.Dialog):
         """
         wx.PostEvent(self, BomDataChangedEvent(source="enrichment_update"))
 
+    # ------------------------------------------------------------------
+    # Part-detail refresh (Type / Stock / LCSC Params, from the API)
+    # ------------------------------------------------------------------
+
+    def start_part_detail_refresh(self, references=None, force=False):
+        """Refresh Type/Stock/Params for assigned parts whose cache is stale.
+
+        This is what replaced the bulk parts database as the source of the
+        detail columns. The part list has already been drawn from whatever the
+        cache held — including nothing, on a first run — so this only ever
+        improves rows; it never gates the UI on the network.
+
+        Passing ``references`` narrows the work to the parts just reassigned.
+        ``force`` refetches them whatever their cache age says, for the one
+        case where the age is exactly the problem: the user is looking at the
+        row right now.
+        """
+        parts = self.store.read_all() or []
+        wanted = {
+            str(part["lcsc"])
+            for part in parts
+            if part.get("lcsc")
+            and (references is None or part.get("reference") in set(references))
+        }
+        if force:
+            stale = [lcsc for lcsc in wanted if self._forced_refresh_due(lcsc)]
+        else:
+            stale = list(self.library.get_part_numbers_needing_refresh(wanted))
+        stale = [lcsc for lcsc in stale if lcsc not in self.pending_part_details]
+        if not stale:
+            return
+
+        # reference lists per LCSC, so one fetch updates every row using it
+        targets = {}
+        for part in parts:
+            lcsc = str(part.get("lcsc") or "")
+            if lcsc in stale:
+                targets.setdefault(lcsc, []).append(part["reference"])
+
+        self.pending_part_details.update(targets.keys())
+        if not force:
+            # A forced refresh rides the current generation rather than
+            # opening a new one. Bumping it here would void every result still
+            # in flight: one click on a row during the opening minute of a
+            # 200-part board would throw the whole startup sweep away, its
+            # worker still running and every answer it returns discarded.
+            # Reassignment — the mutation the generation guard exists for —
+            # still bumps it, and still voids anything forced in flight.
+            self.part_detail_generation += 1
+        generation = self.part_detail_generation
+        Thread(
+            target=self._part_detail_worker,
+            args=(targets, generation),
+            daemon=True,
+        ).start()
+
+    def _forced_refresh_due(self, lcsc: str) -> bool:
+        """Report whether ``lcsc`` may be force-refetched, and record that it was.
+
+        Stamping here rather than at the reply keeps a part that never answers
+        from being retried on every click.
+        """
+        now = time.monotonic()
+        last = self._forced_part_details.get(lcsc)
+        if last is not None and now - last < SELECTION_REFRESH_COOLDOWN_SECONDS:
+            return False
+        self._forced_part_details[lcsc] = now
+        return True
+
+    def _schedule_selection_refresh(self):
+        """Restart the debounce that refreshes the selected rows' details."""
+        # One-shot and restarted from scratch on every selection event, so
+        # holding an arrow key down costs a single refresh at the end of the
+        # run rather than one per row passed over.
+        self._selection_refresh_timer.Start(SELECTION_REFRESH_DELAY_MS, oneShot=True)
+
+    def _on_selection_refresh_timer(self, *_):
+        """Refetch details for whatever is selected now that it has settled."""
+        references = [
+            self.partlist_data_model.get_reference(item)
+            for item in self.footprint_list.GetSelections()
+        ]
+        if not references:
+            return
+        assigned = {
+            str(part["lcsc"])
+            for part in self.store.read_all() or []
+            if part.get("lcsc") and part.get("reference") in set(references)
+        }
+        if not assigned or len(assigned) > SELECTION_REFRESH_MAX_PARTS:
+            return
+        self.start_part_detail_refresh(references, force=True)
+
+    def _part_detail_worker(self, targets: dict, generation: int):
+        """Fetch part details from the API in a worker thread.
+
+        Same contract as the assembly enrichment worker: touches no store, no
+        datamodel and no widget, and echoes the generation back on every event
+        so the UI thread can drop results from a superseded run.
+        """
+        for lcsc, refs in targets.items():
+            try:
+                details = lcsc_details.fetch_details(lcsc)
+            except Exception:  # pylint: disable=broad-exception-caught
+                self.logger.debug("Detail fetch for %s failed", lcsc, exc_info=True)
+                details = {}
+            wx.PostEvent(
+                self,
+                PartDetailsProgressEvent(
+                    lcsc=lcsc, refs=refs, details=details, generation=generation
+                ),
+            )
+            # The endpoints are unofficial and rate-limit under load; the
+            # assembly enrichment worker paces itself the same way.
+            time.sleep(PART_DETAIL_REQUEST_INTERVAL)
+        wx.PostEvent(self, PartDetailsCompletedEvent(generation=generation))
+
+    def on_part_details_progress(self, e):
+        """Persist one detail result and repaint the rows that use it."""
+        generation = getattr(e, "generation", None)
+        if generation is not None and generation != self.part_detail_generation:
+            return
+        lcsc = getattr(e, "lcsc", "")
+        details = getattr(e, "details", {}) or {}
+        self.pending_part_details.discard(lcsc)
+        if not details:
+            # Unresolved, so leave the cache alone: an empty row written here
+            # would look fresh and suppress the next attempt for a whole day.
+            return
+
+        self.library.set_cached_part_details(details)
+        params = params_for_part(details)
+        stock = details.get("stock", "")
+        # A confirmed zero is not the same fact as "we do not know", and the
+        # store distinguishes them. `or None` would collapse the two.
+        stored_stock = None if stock == "" else stock
+        for reference in getattr(e, "refs", []):
+            self.store.set_stock(reference, stored_stock)
+            self.partlist_data_model.set_part_details(
+                reference,
+                details.get("type", ""),
+                details.get("stock", ""),
+                params,
+            )
+
+    def on_part_details_completed(self, e):
+        """Recompute the BOM estimate once a detail batch has landed."""
+        generation = getattr(e, "generation", None)
+        if generation is not None and generation != self.part_detail_generation:
+            return
+        wx.PostEvent(self, BomDataChangedEvent(source="part_detail_refresh"))
+
     def display_message(self, e):
         """Dispaly a message with the data from the event."""
         styles = {
@@ -1193,6 +1528,7 @@ class JLCPCBTools(wx.Dialog):
         self.enable_part_specific_toolbar_buttons(
             self.footprint_list.GetSelectedItemsCount() > 0
         )
+        self._schedule_selection_refresh()
 
         if self.auto_select_alike and self.footprint_list.GetSelectedItemsCount() == 1:
             self.select_alike_parts()
@@ -1264,12 +1600,19 @@ class JLCPCBTools(wx.Dialog):
         """Remove an assigned a LCSC Part number to a footprint."""
         for item in self.footprint_list.GetSelections():
             ref = self.partlist_data_model.get_reference(item)
+            had_number = bool(self.partlist_data_model.get_lcsc(item))
             self.store.set_lcsc(ref, "")
             self.store.set_stock(ref, None)
             board = self.pcbnew.GetBoard()
             fp = board.FindFootprintByReference(ref)
             set_lcsc_value(fp, "")
             self.partlist_data_model.remove_lcsc_number(item)
+            # Only propagate a removal the user could actually see. Clearing a
+            # row that was already blank here must not wipe a number the
+            # schematic has and the board never picked up.
+            if had_number:
+                self._schematic_cleared_refs.add(ref)
+        self.mark_schematic_out_of_date()
         wx.PostEvent(self, BomDataChangedEvent(source="remove_lcsc_number"))
 
     def select_alike_parts(self, *_):
@@ -1424,16 +1767,39 @@ class JLCPCBTools(wx.Dialog):
         a row, the "Assign LCSC number" button, and the toolbar icon — so
         there is one search UI rather than two with different behaviour.
         """
-        if self._part_selector is not None:
+        # The dialog clears self._part_selector from its own EVT_CLOSE handler
+        # before destroying, but a window can also go away without that ever
+        # running (the parent tearing down, for instance), which leaves a
+        # proxy for a deleted C++ object behind. A destroyed wx window is
+        # falsy, so this covers both "never opened" and "already gone".
+        if self._part_selector:
             # Already open — re-target it rather than spawning a second one.
-            self._part_selector.update_for(selection)
-            self._part_selector.Raise()
+            try:
+                self._part_selector.update_for(selection)
+                self._part_selector.Raise()
+                return
+            except RuntimeError:
+                self.logger.debug("Stale LCSC Explorer reference; reopening")
+
+        # Building the dialog can fail loudly: KiCad's wxWidgets raises C++
+        # assertions as Python exceptions, so one bad wx call part-way through
+        # the layout leaves a window with nothing in it. Report that instead
+        # of handing the user a blank rectangle with no clue what went wrong.
+        try:
+            explorer = LcscExplorerDialog(self, selection)
+        except Exception as exc:  # noqa: BLE001 - surfacing beats a dead window
+            self.logger.exception("LCSC Explorer failed to open")
+            self._part_selector = None
+            wx.MessageBox(
+                f"The LCSC Explorer could not be built:\n\n{exc}\n\n"
+                "The full traceback is in the log panel of the main window.",
+                "LCSC Explorer",
+                style=wx.ICON_ERROR,
+            )
             return
-        # The dialog clears self._part_selector from its own EVT_CLOSE
-        # handler before destroying — no destroy hook needed here.
-        self._part_selector = LcscExplorerDialog(self, selection)
-        self._part_selector.Show()
-        self._part_selector.Raise()
+        self._part_selector = explorer
+        explorer.Show()
+        explorer.Raise()
 
     def _lcsc_library_root(self) -> str:
         """Directory the LCSC library triplet is written into.
@@ -1910,16 +2276,25 @@ class JLCPCBTools(wx.Dialog):
         if success:
             if (lcsc := self.sanitize_lcsc(text_data.GetText())) != "":
                 updated_references = []
+                details = self.library.get_part_details(lcsc)
+                params = params_for_part(details)
                 for item in self.footprint_list.GetSelections():
-                    details = self.library.get_part_details(lcsc)
-                    params = params_for_part(details)
                     reference = self.partlist_data_model.get_reference(item)
+                    # .get, not [] — an unseen part number resolves to {} here
+                    # and the background refresh fills the columns in shortly.
                     self.partlist_data_model.set_lcsc(
-                        reference, lcsc, details["type"], details["stock"], params
+                        reference,
+                        lcsc,
+                        details.get("type", ""),
+                        details.get("stock", ""),
+                        params,
                     )
                     self.store.set_lcsc(reference, lcsc)
                     updated_references.append(reference)
                 self.start_assembly_enrichment(updated_references)
+                self.start_part_detail_refresh(updated_references)
+                self._schematic_cleared_refs.difference_update(updated_references)
+                self.mark_schematic_out_of_date()
                 wx.PostEvent(self, BomDataChangedEvent(source="paste_part_lcsc"))
 
     def add_correction(self, e):
@@ -1952,20 +2327,385 @@ class JLCPCBTools(wx.Dialog):
                     self.library.insert_mapping_data(footprint, value, lcsc)
         self.logger.info("All mappings saved")
 
-    def export_to_schematic(self, *_):
-        """Dialog to select schematics."""
+    # -------------------------------------------------------------------------
+    # ------------------------- Schematic sync --------------------------------
+    # -------------------------------------------------------------------------
+
+    def mark_schematic_out_of_date(self):
+        """Note that the board has LCSC changes the schematic has not seen.
+
+        The two sides are only ever brought together by the user pressing
+        "From schematic" or "To schematic". Nothing is scheduled here; the
+        flag exists so the close handler can notice that neither was pressed.
+        """
+        self._schematic_sync_pending = True
+
+    def board_assignments(self) -> dict:
+        """Every reference on this board mapped to its LCSC number.
+
+        Unassigned footprints are present with an empty string. That is the
+        difference that matters when importing: a reference the board does not
+        have at all cannot be assigned, one that is merely blank can.
+        """
+        return {
+            str(part["reference"]): str(part["lcsc"] or "")
+            for part in self.store.read_all()
+        }
+
+    def schematic_assignments(self) -> dict:
+        """LCSC numbers the schematic should carry, keyed by reference.
+
+        Only assigned numbers and explicit removals are listed. A reference
+        that is simply blank in the store is left out, so a schematic that has
+        numbers the board has not caught up with keeps them.
+        """
+        assignments = {
+            str(part["reference"]): str(part["lcsc"])
+            for part in self.store.read_all()
+            if part.get("lcsc")
+        }
+        for reference in self._schematic_cleared_refs:
+            assignments.setdefault(reference, "")
+        return assignments
+
+    def _schematic_paths(self, interactive: bool):
+        """Root sheet(s) of this project, asking the user only if unclear.
+
+        Both directions start here: the sub-sheets below the root are found by
+        following its ``Sheetfile`` properties, so one path is normally the
+        whole hierarchy.
+        """
+        root = find_root_schematic(self.project_path, self.board_name)
+        if root:
+            return [root]
+        if not interactive:
+            self.logger.debug(
+                "No schematic found for %s, skipping schematic sync", self.board_name
+            )
+            return []
         with wx.FileDialog(
             self,
             "Select Schematics",
             self.project_path,
             self.schematic_name,
-            "KiCad V6 Schematics (*.kicad_sch)|*.kicad_sch",
+            "KiCad Schematics (*.kicad_sch)|*.kicad_sch",
             wx.FD_OPEN | wx.FD_FILE_MUST_EXIST | wx.FD_MULTIPLE,
         ) as openFileDialog:
             if openFileDialog.ShowModal() == wx.CANCEL:
-                return
-            paths = openFileDialog.GetPaths()
-            SchematicExport(self).load_schematic(paths)
+                return []
+            return openFileDialog.GetPaths()
+
+    def _describe_export(self, paths):
+        """Per-reference preview of what writing ``paths`` would change.
+
+        Read from the files rather than guessed: the confirmation has to name
+        the numbers that are about to be destroyed, and only the schematic
+        knows what those currently are.
+        """
+        assignments = self.schematic_assignments()
+        current = read_schematic(paths)
+        added, updated, cleared, absent = [], [], [], []
+        for reference in sorted(assignments):
+            want = assignments[reference]
+            have = current.numbers.get(reference, "")
+            if want == have:
+                continue
+            if reference not in current.references:
+                if want:
+                    absent.append(reference)
+            elif not want:
+                cleared.append(f"{reference}  {have} -> (cleared)")
+            elif have:
+                updated.append(f"{reference}  {have} -> {want}")
+            else:
+                added.append(f"{reference}  {want}")
+        return added, updated, cleared, absent
+
+    def _confirm_export(self, paths) -> bool:
+        """Show what the export overwrites and ask whether to go ahead."""
+        try:
+            added, updated, cleared, absent = self._describe_export(paths)
+        except OSError as exc:
+            self.logger.warning("Could not preview the schematic export: %s", exc)
+            added, updated, cleared, absent = [], [], [], []
+
+        if not (added or updated or cleared):
+            note = ""
+            if absent:
+                note = (
+                    "\n\n"
+                    f"{len(absent)} assigned reference(s) have no symbol in the "
+                    "schematic:\n" + _sample(absent)
+                )
+            wx.MessageBox(
+                "The schematic already carries the numbers assigned here." + note,
+                "To schematic",
+                style=wx.ICON_INFORMATION,
+            )
+            return False
+
+        message = [
+            "This overwrites the LCSC field of the schematic symbols with "
+            "what the board says. Numbers only the schematic has are left "
+            "alone, but every one listed below is replaced.",
+            "",
+        ]
+        if added:
+            message += [f"{len(added)} symbol(s) gain a number:", _sample(added), ""]
+        if updated:
+            message += [
+                f"{len(updated)} symbol(s) have a different number REPLACED:",
+                _sample(updated),
+                "",
+            ]
+        if cleared:
+            message += [f"{len(cleared)} symbol(s) are cleared:", _sample(cleared), ""]
+        if absent:
+            message += [
+                f"{len(absent)} assigned reference(s) have no symbol and are skipped:",
+                _sample(absent),
+                "",
+            ]
+        message.append(
+            "Each sheet that changes is backed up as <sheet>_old.\n\nContinue?"
+        )
+        return (
+            wx.MessageBox(
+                "\n".join(message),
+                "To schematic",
+                style=wx.YES_NO | wx.ICON_WARNING,
+            )
+            == wx.YES
+        )
+
+    def export_to_schematic(self, *_):
+        """Write the assigned LCSC numbers into the schematic, on demand."""
+        self.sync_schematic(interactive=True)
+
+    def sync_schematic(self, interactive: bool = False, confirm: bool = True) -> bool:
+        """Write the assigned LCSC numbers into the schematic symbols.
+
+        Without this the numbers live only on the footprints, where the Symbol
+        Fields Table cannot see them and where the next "Update PCB from
+        Schematic" overwrites them.
+
+        Returns True when the schematic is known to be up to date afterwards.
+        """
+        paths = self._schematic_paths(interactive)
+        if not paths:
+            return False
+
+        skip_locked = True
+        locked = [path for path in paths if is_open_in_editor(path)]
+        if locked:
+            if not interactive:
+                self.logger.warning(
+                    "Schematic is open in the Schematic Editor; LCSC numbers "
+                    "were not written to it. Close it and press 'To schematic', "
+                    "or they will only exist on the footprints."
+                )
+                return False
+            answer = wx.MessageBox(
+                "The schematic is open in the KiCad Schematic Editor:\n\n"
+                + "\n".join(os.path.basename(path) for path in locked)
+                + "\n\nThe editor holds its own copy, so anything written now "
+                "is lost as soon as you save there. Close the Schematic Editor "
+                "and try again.\n\nWrite to the file anyway?",
+                "To schematic",
+                style=wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
+            )
+            if answer != wx.YES:
+                return False
+            skip_locked = False
+
+        if interactive and confirm and not self._confirm_export(paths):
+            return False
+
+        try:
+            result = SchematicExport(
+                self, self.schematic_assignments(), skip_locked=skip_locked
+            ).load_schematic(paths)
+        except Exception as exc:  # noqa: BLE001 - a failed sync must not kill the assignment
+            self.logger.exception("Writing LCSC numbers to the schematic failed")
+            if interactive:
+                wx.MessageBox(
+                    f"The schematic could not be updated:\n\n{exc}",
+                    "To schematic",
+                    style=wx.ICON_ERROR,
+                )
+            return False
+
+        if not result.skipped_locked:
+            self._schematic_cleared_refs.clear()
+            self._schematic_sync_pending = False
+        self.logger.info(result.summary())
+        if interactive:
+            wx.MessageBox(
+                result.summary(),
+                "To schematic",
+                style=wx.ICON_INFORMATION,
+            )
+        return not result.skipped_locked
+
+    def _confirm_import(self, diff, found) -> bool:
+        """Show what the import overwrites and ask whether to go ahead."""
+        stale = ""
+        if found.locked:
+            stale = (
+                "\n\nNOTE: "
+                + ", ".join(os.path.basename(path) for path in found.locked)
+                + " is open in the Schematic Editor. This reads the file on "
+                "disk, so anything you have not saved there is not included."
+            )
+
+        if not diff.changes:
+            skipped = ""
+            if diff.unknown:
+                skipped = (
+                    "\n\n"
+                    f"{len(diff.unknown)} symbol(s) have no footprint on this "
+                    "board:\n" + _sample(diff.unknown)
+                )
+            wx.MessageBox(
+                "The board already carries the numbers the schematic has."
+                + skipped
+                + stale,
+                "From schematic",
+                style=wx.ICON_INFORMATION,
+            )
+            return False
+
+        message = [
+            "This overwrites the LCSC number on the footprints with what the "
+            "schematic says. Numbers only the board has are left alone, but "
+            "every one listed below is replaced.",
+            "",
+        ]
+        if diff.added:
+            message += [
+                f"{len(diff.added)} footprint(s) gain a number:",
+                _sample([f"{ref}  {lcsc}" for ref, lcsc in diff.added]),
+                "",
+            ]
+        if diff.replaced:
+            message += [
+                f"{len(diff.replaced)} footprint(s) have a different number REPLACED:",
+                _sample(
+                    [
+                        f"{ref}  {current} -> {lcsc}"
+                        for ref, current, lcsc in diff.replaced
+                    ]
+                ),
+                "",
+            ]
+        if diff.unknown:
+            message += [
+                f"{len(diff.unknown)} symbol(s) have no footprint on this board "
+                "and are skipped:",
+                _sample(diff.unknown),
+                "",
+            ]
+        message.append(
+            "The board is only changed in memory — save the PCB in KiCad to "
+            "keep it." + stale + "\n\nContinue?"
+        )
+        return (
+            wx.MessageBox(
+                "\n".join(message),
+                "From schematic",
+                style=wx.YES_NO | wx.ICON_WARNING,
+            )
+            == wx.YES
+        )
+
+    def import_from_schematic(self, *_):
+        """Copy the LCSC numbers in the schematic symbols onto the board.
+
+        The other direction. A schematic is routinely ahead of the board —
+        fields filled in eeschema, or a design that shipped with them — and
+        until now the plugin could not see any of it, so those boards came up
+        looking completely unassigned.
+        """
+        paths = self._schematic_paths(interactive=True)
+        if not paths:
+            return
+
+        try:
+            found = read_schematic(paths)
+        except OSError as exc:
+            self.logger.exception("Reading LCSC numbers from the schematic failed")
+            wx.MessageBox(
+                f"The schematic could not be read:\n\n{exc}",
+                "From schematic",
+                style=wx.ICON_ERROR,
+            )
+            return
+
+        self.logger.info(found.summary())
+        if not found.read:
+            wx.MessageBox(
+                "No schematic could be read:\n\n"
+                + "\n".join(os.path.basename(path) for path in found.missing),
+                "From schematic",
+                style=wx.ICON_ERROR,
+            )
+            return
+
+        diff = diff_against_board(found.numbers, self.board_assignments())
+        if not self._confirm_import(diff, found):
+            return
+
+        references = self._apply_schematic_numbers(diff.assignments())
+        self.logger.info(
+            "Imported %d LCSC number(s) from the schematic", len(references)
+        )
+        wx.MessageBox(
+            f"{len(references)} footprint(s) updated from the schematic.\n\n"
+            "Save the PCB in KiCad to keep the change.",
+            "From schematic",
+            style=wx.ICON_INFORMATION,
+        )
+
+    def _apply_schematic_numbers(self, numbers: dict) -> list:
+        """Write imported numbers to the store, the board and the part list."""
+        board = self.pcbnew.GetBoard()
+        details_by_lcsc = {}
+        references = []
+        for reference in sorted(numbers):
+            lcsc = numbers[reference]
+            fp = board.FindFootprintByReference(reference)
+            if fp is None:
+                # Filtered out by the diff already; a board that changed under
+                # us between the preview and here is the only way to get here.
+                self.logger.warning(
+                    "No footprint %s on the board, not importing %s", reference, lcsc
+                )
+                continue
+            self.store.set_lcsc(reference, lcsc)
+            self.store.set_stock(reference, None)
+            set_lcsc_value(fp, lcsc)
+            if lcsc not in details_by_lcsc:
+                details_by_lcsc[lcsc] = self.library.get_part_details(lcsc)
+            details = details_by_lcsc[lcsc]
+            # .get, not [] — an unseen part number resolves to {} here and the
+            # background refresh fills the columns in shortly.
+            self.partlist_data_model.set_lcsc(
+                reference,
+                lcsc,
+                details.get("type", ""),
+                details.get("stock", ""),
+                params_for_part(details),
+            )
+            references.append(reference)
+
+        if not references:
+            return references
+        self._schematic_cleared_refs.difference_update(references)
+        self.start_assembly_enrichment(references)
+        self.start_part_detail_refresh(references)
+        self.pcbnew.Refresh()
+        wx.PostEvent(self, BomDataChangedEvent(source="import_from_schematic"))
+        return references
 
     def add_foot_mapping(self, *_):
         """Add a footprint mapping."""
@@ -1991,11 +2731,18 @@ class JLCPCBTools(wx.Dialog):
                     self.store.set_lcsc(reference, lcsc)
                     self.logger.info("Found %s", lcsc)
                     details = self.library.get_part_details(lcsc)
-                    params = params_for_part(self.library.get_part_details(lcsc))
+                    params = params_for_part(details)
                     self.partlist_data_model.set_lcsc(
-                        reference, lcsc, details["type"], details["stock"], params
+                        reference,
+                        lcsc,
+                        details.get("type", ""),
+                        details.get("stock", ""),
+                        params,
                     )
                     self.start_assembly_enrichment([reference])
+                    self.start_part_detail_refresh([reference])
+                    self._schematic_cleared_refs.discard(reference)
+                    self.mark_schematic_out_of_date()
         self.recompute_bom_estimate()
 
     def sanitize_lcsc(self, lcsc_PN):

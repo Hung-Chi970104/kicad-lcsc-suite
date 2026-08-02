@@ -13,7 +13,53 @@ from .dataview_highlight import (
     expand_value,
 )
 from .helpers import loadIconScaled
+from .lcsc import theme
 from .partselector_columns import COLUMN_INDEX, MODEL_COLUMN_TYPES
+
+
+def stock_text(value) -> str:
+    """Render a stock figure as the Stock column's text.
+
+    Every text column of this model is declared to wx as a ``"string"``, and
+    ``wxDataViewRenderer`` *silently discards* a cell whose variant type does
+    not match the column's — an ``int`` written here renders as a blank cell,
+    not as a number, with nothing but a ``wxLogDebug`` line to say so. The
+    part list is fed from several places (the bulk database, the API detail
+    cache, the explorer's assignment event) and only some of them hand over
+    strings, so the coercion belongs here rather than at each caller.
+
+    ``None`` and ``""`` both mean "we have not looked", which is not the same
+    fact as a confirmed zero and must stay blank.
+    """
+    if value is None or value == "":
+        return ""
+    return str(value)
+
+
+def standard_trigger_colour() -> wx.Colour:
+    """Row colour for parts that push the board into Standard-mode pricing.
+
+    Resolved per call rather than stored as a constant: the deep red this
+    used to hard-code was picked against a white list background and turns
+    into unreadable mud on a dark one, and KiCad follows the desktop
+    appearance, which the user can change while the plugin is open.
+
+    Advisory amber rather than ``bad`` red. These rows are not broken — they
+    cost more to assemble — and red made them indistinguishable from the
+    genuine error state below.
+    """
+    return theme.colour("standard")
+
+
+def unassigned_colour() -> wx.Colour:
+    """Row colour for a BOM part with no LCSC number.
+
+    This is the one actionable failure the list can show: the part is going
+    into the BOM and JLC has nothing to place. Parts excluded from the BOM
+    (mounting holes, fiducials, test points) are silently fine without a
+    number and are never marked.
+    """
+    return theme.colour("bad")
 
 
 class PartListDataModel(dv.PyDataViewModel):
@@ -81,21 +127,47 @@ class PartListDataModel(dv.PyDataViewModel):
         self.standard_trigger_highlighting_enabled = bool(enabled)
 
     def GetAttr(self, item, col, attr):
-        """Apply row attributes for Standard-mode trigger highlighting."""
+        """Colour a row by the one thing about it that needs attention.
+
+        Two states, and they cannot overlap: a Standard-mode trigger is by
+        definition a part that *has* an LCSC number, and an unassigned part
+        has none. Unassigned wins the ordering anyway because it is the more
+        urgent of the two.
+        """
         del col
-        if not self.standard_trigger_highlighting_enabled:
-            return False
         row = self.ItemToObject(item)
         if not row:
+            return False
+
+        if self._is_unassigned_bom_part(row):
+            attr.SetColour(unassigned_colour())
+            if hasattr(attr, "SetBold"):
+                attr.SetBold(True)
+            return True
+
+        if not self.standard_trigger_highlighting_enabled:
             return False
         ref = str(row[self.columns["REF_COL"]] or "")
         if ref not in self.standard_trigger_refs:
             return False
 
-        attr.SetColour(wx.Colour(120, 0, 0))
+        attr.SetColour(standard_trigger_colour())
         if hasattr(attr, "SetBold"):
             attr.SetBold(True)
         return True
+
+    def _is_unassigned_bom_part(self, row) -> bool:
+        """Report whether ``row`` is headed for the BOM without an LCSC number.
+
+        Read straight off the row rather than from a set pushed in by the BOM
+        controller: both facts already live in the model, and a separate set
+        would go stale on every BOM toggle. ``BOM_COL`` holds an icon by this
+        point — index 0 is the tick, meaning included — which is the same
+        identity check ``toggle_bom`` makes.
+        """
+        if str(row[self.columns["LCSC_COL"]] or "").strip():
+            return False
+        return row[self.columns["BOM_COL"]] == self.bom_pos_icons[0]
 
     @staticmethod
     def natural_sort_key(s):
@@ -233,6 +305,7 @@ class PartListDataModel(dv.PyDataViewModel):
         else:
             data[self.columns["TRAILING_SPACER_COL"]] = ""
 
+        data[self.columns["STOCK_COL"]] = stock_text(data[self.columns["STOCK_COL"]])
         data[self.columns["BOM_COL"]] = self.get_bom_pos_icon(
             data[self.columns["BOM_COL"]]
         )
@@ -295,7 +368,7 @@ class PartListDataModel(dv.PyDataViewModel):
         item = self.data[index]
         item[self.columns["LCSC_COL"]] = lcsc
         item[self.columns["TYPE_COL"]] = type
-        item[self.columns["STOCK_COL"]] = stock
+        item[self.columns["STOCK_COL"]] = stock_text(stock)
         item[self.columns["PARAMS_COL"]] = self._encode_params_value(
             reference=str(item[self.columns["REF_COL"]] or ""),
             value=str(item[self.columns["VALUE_COL"]] or ""),
@@ -304,6 +377,27 @@ class PartListDataModel(dv.PyDataViewModel):
         )
         item[self.columns["ENRICH_COL"]] = ""
         item[self.columns["PRICE_COL"]] = ""
+        self.ItemChanged(self.ObjectToItem(item))
+
+    def set_part_details(self, ref, type, stock, params):
+        """Refresh the details columns for a reference, leaving the rest alone.
+
+        Narrower than :meth:`set_lcsc` on purpose: this runs when background
+        detail refresh lands newer stock for a part the user has *not* touched,
+        and ``set_lcsc`` would clear the enrichment status and the BOM price
+        alongside it — visibly resetting columns that did not change.
+        """
+        if (index := self.find_index(ref)) is None:
+            return
+        item = self.data[index]
+        item[self.columns["TYPE_COL"]] = type
+        item[self.columns["STOCK_COL"]] = stock_text(stock)
+        item[self.columns["PARAMS_COL"]] = self._encode_params_value(
+            reference=str(item[self.columns["REF_COL"]] or ""),
+            value=str(item[self.columns["VALUE_COL"]] or ""),
+            footprint=str(item[self.columns["FP_COL"]] or ""),
+            params=str(params or ""),
+        )
         self.ItemChanged(self.ObjectToItem(item))
 
     def set_bom_price(self, ref, price_label):

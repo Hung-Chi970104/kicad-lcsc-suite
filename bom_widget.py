@@ -162,7 +162,6 @@ class BomEstimatorController:
         """
         board = self._get_board()
         populated_sides: set[str] = set()
-        populated_refs: set[str] = set()
         smt_populated_sides: set[str] = set()
         standard_part_refs: set[str] = set()
 
@@ -188,7 +187,6 @@ class BomEstimatorController:
 
             side = "bottom" if self._is_on_bottom_side(footprint) else "top"
             populated_sides.add(side)
-            populated_refs.add(str(reference))
 
             is_tht = False
             with suppress(TypeError, ValueError):
@@ -203,7 +201,6 @@ class BomEstimatorController:
         return build_standard_mode_context(
             manual_enabled=bool(self._is_force_standard_enabled()),
             board_count=board_count,
-            populated_refs=populated_refs,
             populated_sides=populated_sides,
             smt_populated_sides=smt_populated_sides,
             standard_part_refs=standard_part_refs,

@@ -21,9 +21,7 @@ from .events import (
     DownloadStartedEvent,
     MessageEvent,
 )
-from .helpers import PLUGIN_PATH, dict_factory, natural_sort_collation
-from .partselector_columns import DB_FIELDS, SORTABLE_COLUMN_INDEX_TO_DB
-from .search_escape import escape_fts_phrase, escape_like_term
+from .helpers import PLUGIN_PATH, dict_factory
 from .unzip_parts import unzip_parts
 
 
@@ -39,8 +37,29 @@ class LibraryState(Enum):
     """The various states of the library."""
 
     INITIALIZED = 0
-    UPDATE_NEEDED = 1
     DOWNLOAD_RUNNING = 2
+
+
+#: How long a cached part-detail row is considered fresh. Stock is the only
+#: field that really moves, and a day-old figure is still a useful signal —
+#: whereas a *missing* one leaves the part list blank. Stale rows are served
+#: immediately and refreshed in the background, which is what makes the plugin
+#: work offline: the last thing we learned about a part is always available.
+PART_CACHE_TTL_SECONDS = 24 * 60 * 60
+
+#: Column order of the part-detail cache. Mirrors
+#: ``lcsc.details.DETAIL_FIELDS`` so a cached row and a freshly fetched one are
+#: the same mapping to every consumer.
+PART_CACHE_FIELDS = (
+    "lcsc",
+    "stock",
+    "type",
+    "part_no",
+    "description",
+    "package",
+    "category",
+    "price",
+)
 
 
 class Library:
@@ -49,8 +68,6 @@ class Library:
     def __init__(self, parent):
         self.logger = logging.getLogger(__name__)
         self.parent = parent
-        self.order_by = "LCSC Part"
-        self.order_dir = "ASC"
         self.datadir = ""
         self.selected_library = DEFAULT_LIBRARY
         self.partsdb_file = ""
@@ -59,6 +76,8 @@ class Library:
         self.globalcorrectionsdb_file = ""
         self.correctionsdb_file = ""
         self.mappingsdb_file = ""
+        self.partcachedb_file = ""
+        self.has_bulk_database = False
         self.state = None
         self.download_lock = Lock()
         self.category_map = {}
@@ -100,10 +119,12 @@ class Library:
             else self.localcorrectionsdb_file
         )
         self.mappingsdb_file = os.path.join(self.datadir, "mappings.db")
+        self.partcachedb_file = os.path.join(self.datadir, "partcache.db")
         self.category_map = {}
 
         self.setup()
         self.check_library()
+        self.create_part_cache_table()
 
         self.logger.debug(
             "Library configuration refreshed. Selected: %s, Data directory: %s, Database: %s",
@@ -123,14 +144,18 @@ class Library:
             self.logger.info("Data directory '%s' exists, not creating", self.datadir)
 
     def check_library(self):
-        """Check if the database files exists, if not trigger update / create database."""
-        if (
-            not os.path.isfile(self.partsdb_file)
-            or os.path.getsize(self.partsdb_file) == 0
-        ):
-            self.state = LibraryState.UPDATE_NEEDED
-        else:
-            self.state = LibraryState.INITIALIZED
+        """Check which databases exist and set up the small ones that don't.
+
+        The bulk parts database is **optional**. Per-part details now come from
+        the API with a local cache behind them (see ``lcsc/details.py``), so an
+        absent parts DB is a missing offline catalogue, not a broken install —
+        it must not block start-up or trigger a three-quarter-gigabyte download
+        nobody asked for.
+        """
+        self.has_bulk_database = (
+            os.path.isfile(self.partsdb_file) and os.path.getsize(self.partsdb_file) > 0
+        )
+        self.state = LibraryState.INITIALIZED
         corrections_file_missing = not os.path.isfile(self.correctionsdb_file)
         if corrections_file_missing or os.path.getsize(self.correctionsdb_file) == 0:
             self.create_correction_table()
@@ -205,130 +230,6 @@ class Library:
             self.create_correction_table()
             for regex, rotation, offset in global_corrections:
                 self.insert_correction_data(regex, rotation, offset)
-
-    def set_order_by(self, n):
-        """Set which value we want to order by when getting data from the database."""
-        column = SORTABLE_COLUMN_INDEX_TO_DB.get(n)
-        if column is None:
-            return
-        if self.order_by == column and self.order_dir == "ASC":
-            self.order_dir = "DESC"
-        else:
-            self.order_by = column
-            self.order_dir = "ASC"
-
-    def search(self, parameters):
-        """Search the database for parts that meet the given parameters."""
-
-        # skip searching if there are no keywords and the part number
-        # field is empty as there are too many parts for the search
-        # to reasonbly show the desired part
-        if parameters["keyword"] == "" and (
-            "part_no" not in parameters or parameters["part_no"] == ""
-        ):
-            return []
-
-        # Note: must match the shared part selector column definitions.
-        s = ",".join(f'"{c}"' for c in DB_FIELDS)
-        query = f"SELECT {s} FROM parts WHERE "
-
-        match_chunks = []
-        like_chunks = []
-
-        query_chunks = []
-
-        # Build 'match_chunks' and 'like_chunks' arrays
-        #
-        # FTS5 (https://www.sqlite.org/fts5.html) has a substring limit of
-        # at least 3 characters.
-        # 'Substrings consisting of fewer than 3 unicode characters do not
-        #  match any rows when used with a full-text query'
-        #
-        # However, they will still match with a LIKE.
-        #
-        # So extract out the <3 character strings and add a 'LIKE' term
-        # for each of those.
-        if parameters["keyword"] != "":
-            keywords = parameters["keyword"].split(" ")
-            match_keywords_intermediate = []
-            for w in keywords:
-                # skip over empty keywords
-                if w != "":
-                    if len(w) < 3:  # LIKE entry
-                        escaped = escape_like_term(w)
-                        kw = f"description LIKE '%{escaped}%' ESCAPE '\\'"
-                        like_chunks.append(kw)
-                    else:  # MATCH entry
-                        escaped = escape_fts_phrase(w)
-                        kw = f'"{escaped}"'
-                        match_keywords_intermediate.append(kw)
-            if match_keywords_intermediate:
-                match_entry = " AND ".join(match_keywords_intermediate)
-                match_chunks.append(f"{match_entry}")
-
-        if "manufacturer" in parameters and parameters["manufacturer"] != "":
-            p = escape_fts_phrase(parameters["manufacturer"])
-            match_chunks.append(f'"Manufacturer":"{p}"')
-        if "package" in parameters and parameters["package"] != "":
-            p = escape_fts_phrase(parameters["package"])
-            match_chunks.append(f'"Package":"{p}"')
-        if (
-            "category" in parameters
-            and parameters["category"] != ""
-            and parameters["category"] != "All"
-        ):
-            p = escape_fts_phrase(parameters["category"])
-            match_chunks.append(f'"First Category":"{p}"')
-        if "subcategory" in parameters and parameters["subcategory"] != "":
-            p = escape_fts_phrase(parameters["subcategory"])
-            match_chunks.append(f'"Second Category":"{p}"')
-        if "part_no" in parameters and parameters["part_no"] != "":
-            p = escape_fts_phrase(parameters["part_no"])
-            match_chunks.append(f'"MFR.Part":"{p}"')
-        if "solder_joints" in parameters and parameters["solder_joints"] != "":
-            p = escape_fts_phrase(parameters["solder_joints"])
-            match_chunks.append(f'"Solder Joint":"{p}"')
-
-        library_types = []
-        if parameters["basic"]:
-            library_types.append('"Basic"')
-        if parameters["extended"]:
-            library_types.append('"Extended"')
-        if parameters["preferred"]:
-            library_types.append('"Preferred"')
-        if library_types:
-            query_chunks.append(f'"Library Type" IN ({",".join(library_types)})')
-
-        if parameters["stock"]:
-            query_chunks.append('"Stock" > "0"')
-
-        if not match_chunks and not like_chunks and not query_chunks:
-            return []
-
-        if match_chunks:
-            query += "parts MATCH '"
-            query += " AND ".join(match_chunks)
-            query += "'"
-
-        if like_chunks:
-            if match_chunks:
-                query += " AND "
-            query += " AND ".join(like_chunks)
-
-        if query_chunks:
-            if match_chunks or like_chunks:
-                query += " AND "
-            query += " AND ".join(query_chunks)
-
-        query += f' ORDER BY "{self.order_by}" COLLATE naturalsort {self.order_dir}'
-        query += " LIMIT 1000"
-
-        self.logger.debug("query '%s'", query)
-
-        with contextlib.closing(sqlite3.connect(self.partsdb_file)) as con:
-            con.create_collation("naturalsort", natural_sort_collation)
-            with con as cur:
-                return cur.execute(query).fetchall()
 
     def delete_parts_table(self):
         """Delete the parts table."""
@@ -490,16 +391,145 @@ class Library:
             cur.commit()
 
     def get_part_details(self, number: str) -> dict:
-        """Get the part details for a LCSC number using optimized FTS5 querying."""
-        with contextlib.closing(sqlite3.connect(self.partsdb_file)) as con:
-            con.row_factory = dict_factory
-            cur = con.cursor()
-            query = """SELECT "LCSC Part" AS lcsc, "Stock" AS stock, "Library Type" AS type,
-                "MFR.Part" as part_no, "Description" as description, "Package" as package,
-                "First Category" as category, "Price" as price
-                FROM parts WHERE parts MATCH :number"""
-            cur.execute(query, {"number": number})
-            return next((n for n in cur.fetchall() if n["lcsc"] == number), {})
+        """Resolve one part's details, cheapest source first, without blocking.
+
+        Called once per assigned part while the footprint list is being built,
+        on the UI thread, so it must not touch the network. The ordering is:
+
+        1. the local API cache, however old — a stale figure beats a blank row,
+           and serving it unconditionally is what makes an offline session
+           behave;
+        2. the bulk parts database, when the user has downloaded one;
+        3. nothing, which the caller must read as "not looked up yet".
+
+        Refreshing stale and missing entries is the background refresher's job
+        (``mainwindow.start_part_detail_refresh``), not this method's.
+        """
+        cached = self.get_cached_part_details(number)
+        if cached:
+            return cached
+        return self.get_bulk_part_details(number)
+
+    def get_bulk_part_details(self, number: str) -> dict:
+        """Get part details from the downloaded parts DB using FTS5 querying."""
+        if not self.has_bulk_database:
+            return {}
+        try:
+            with contextlib.closing(sqlite3.connect(self.partsdb_file)) as con:
+                con.row_factory = dict_factory
+                cur = con.cursor()
+                query = """SELECT "LCSC Part" AS lcsc, "Stock" AS stock, "Library Type" AS type,
+                    "MFR.Part" as part_no, "Description" as description, "Package" as package,
+                    "First Category" as category, "Price" as price
+                    FROM parts WHERE parts MATCH :number"""
+                cur.execute(query, {"number": number})
+                return next((n for n in cur.fetchall() if n["lcsc"] == number), {})
+        except sqlite3.Error as exc:
+            # A half-written download leaves a file that exists but has no
+            # `parts` table. That is a missing catalogue, not a crash.
+            self.logger.debug("Bulk part lookup for %s failed: %s", number, exc)
+            return {}
+
+    # ------------------------------------------------------------------
+    # API part-detail cache
+    # ------------------------------------------------------------------
+
+    def create_part_cache_table(self):
+        """Create the API part-detail cache table if it does not exist."""
+        columns = ",".join(
+            f"'{field}'" + (" NOT NULL PRIMARY KEY" if field == "lcsc" else "")
+            for field in PART_CACHE_FIELDS
+        )
+        with (
+            contextlib.closing(sqlite3.connect(self.partcachedb_file)) as con,
+            con as cur,
+        ):
+            cur.execute(
+                f"CREATE TABLE IF NOT EXISTS part_cache ({columns}, fetched_at NUMERIC)"
+            )
+            cur.commit()
+
+    def get_cached_part_details(self, number: str) -> dict:
+        """Return the cached details for ``number``, ignoring age.
+
+        Age is deliberately not a filter here — see
+        :func:`get_part_details`. ``fetched_at`` is dropped from the result so
+        a cached row is indistinguishable from a bulk-database one.
+        """
+        if not number:
+            return {}
+        try:
+            with contextlib.closing(sqlite3.connect(self.partcachedb_file)) as con:
+                con.row_factory = dict_factory
+                row = (
+                    con.cursor()
+                    .execute(
+                        "SELECT * FROM part_cache WHERE lcsc = :lcsc",
+                        {"lcsc": number},
+                    )
+                    .fetchone()
+                )
+        except sqlite3.Error as exc:
+            self.logger.debug("Part cache read for %s failed: %s", number, exc)
+            return {}
+        if not row:
+            return {}
+        row.pop("fetched_at", None)
+        return row
+
+    def set_cached_part_details(self, details: dict):
+        """Upsert one part's details into the cache, stamped as fetched now."""
+        lcsc = str(details.get("lcsc") or "")
+        if not lcsc:
+            return
+        row = {field: details.get(field, "") for field in PART_CACHE_FIELDS}
+        row["lcsc"] = lcsc
+        row["fetched_at"] = int(time.time())
+        placeholders = ",".join(f":{field}" for field in PART_CACHE_FIELDS)
+        assignments = ",".join(
+            f"{field} = :{field}" for field in PART_CACHE_FIELDS if field != "lcsc"
+        )
+        try:
+            with (
+                contextlib.closing(sqlite3.connect(self.partcachedb_file)) as con,
+                con as cur,
+            ):
+                cur.execute(
+                    f"INSERT INTO part_cache ({','.join(PART_CACHE_FIELDS)}, fetched_at) "
+                    f"VALUES ({placeholders}, :fetched_at) "
+                    f"ON CONFLICT(lcsc) DO UPDATE SET {assignments}, "
+                    "fetched_at = :fetched_at",
+                    row,
+                )
+                cur.commit()
+        except sqlite3.Error as exc:
+            self.logger.debug("Part cache write for %s failed: %s", lcsc, exc)
+
+    def get_part_numbers_needing_refresh(self, numbers) -> list:
+        """Return which of ``numbers`` are absent from the cache or stale."""
+        wanted = [str(number) for number in dict.fromkeys(numbers) if number]
+        if not wanted:
+            return []
+        cutoff = int(time.time()) - PART_CACHE_TTL_SECONDS
+        try:
+            with contextlib.closing(sqlite3.connect(self.partcachedb_file)) as con:
+                # The f-string only injects ?-placeholders; the LCSC numbers
+                # themselves are bound, never interpolated.
+                placeholders = ",".join("?" for _ in wanted)
+                rows = (
+                    con.cursor()
+                    .execute(
+                        f"SELECT lcsc FROM part_cache WHERE lcsc IN ({placeholders}) "
+                        "AND fetched_at IS NOT NULL AND fetched_at >= ?",
+                        [*wanted, cutoff],
+                    )
+                    .fetchall()
+                )
+        except sqlite3.Error as exc:
+            self.logger.debug("Part cache staleness query failed: %s", exc)
+            return wanted
+        fresh = {row[0] for row in rows}
+        return [number for number in wanted if number not in fresh]
 
     def update(self):
         """Update the sqlite parts database from the JLCPCB CSV."""
