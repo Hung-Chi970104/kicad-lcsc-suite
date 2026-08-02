@@ -135,18 +135,17 @@ def test_build_bom_estimate_view_model_returns_summary_and_highlights():
     assert view_model["highlight_refs"] == {"R1"}
 
 
-def test_build_standard_mode_context_highlights_standard_parts_and_multiside_refs():
-    """Policy context includes all populated refs on multi-side boards."""
+def test_build_standard_mode_context_excludes_board_level_refs():
+    """Policy context highlights only culpable parts, not every populated ref."""
     context = build_standard_mode_context(
         manual_enabled=False,
         board_count=5,
-        populated_refs={"R1", "R2", "R3"},
         populated_sides={"top", "bottom"},
         smt_populated_sides={"top", "bottom"},
         standard_part_refs={"R2"},
     )
 
-    assert context["trigger_references"] == {"R1", "R2", "R3"}
+    assert context["trigger_references"] == {"R2"}
 
 
 def test_prepare_bom_price_labels_returns_reference_to_label_mapping():

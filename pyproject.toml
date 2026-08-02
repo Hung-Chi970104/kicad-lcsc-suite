@@ -163,6 +163,8 @@ split-on-trailing-comma = false
 "common/progress.py" = ["T201"]
 # A standalone CLI diagnostic — printing to the terminal is its whole job.
 "selfcheck.py" = ["T201"]
+# Same: a CLI dev tool whose output is the report it prints.
+"scripts/gui_probe.py" = ["T201"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 25

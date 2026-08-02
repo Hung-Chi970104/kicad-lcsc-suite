@@ -173,7 +173,6 @@ def build_standard_mode_context(
     *,
     manual_enabled: bool,
     board_count: int,
-    populated_refs: Iterable[str],
     populated_sides: Iterable[str],
     smt_populated_sides: Iterable[str],
     standard_part_refs: Iterable[str],
@@ -182,8 +181,16 @@ def build_standard_mode_context(
 
     This function is intentionally side-effect free so policy decisions can be
     unit-tested without UI or board-object dependencies.
+
+    ``trigger_references`` holds only the parts that are *individually*
+    responsible for Standard mode. The other three signals are properties of
+    the whole board — a manual override, the order quantity, having both sides
+    populated — and no single part is to blame for any of them. This function
+    deliberately never receives the full reference list, so it cannot go back
+    to marking every part on a two-sided board: that painted the entire list
+    and told the user nothing. Board-level reasons are reported in the summary
+    line instead, via :func:`standard_signal_reasons`.
     """
-    populated_refs = set(populated_refs)
     populated_sides = set(populated_sides)
     smt_populated_sides = set(smt_populated_sides)
     standard_part_refs = set(standard_part_refs)
@@ -195,8 +202,6 @@ def build_standard_mode_context(
         "multi_side_populated": len(populated_sides) > 1,
     }
     trigger_references = set(standard_part_refs)
-    if signals["multi_side_populated"]:
-        trigger_references.update(populated_refs)
 
     return {
         "signals": signals,

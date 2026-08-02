@@ -47,6 +47,37 @@ Every part view shows **both** numbers plus a plain-language warning:
 
 Stock is cached for 5 minutes; **Refresh** clears the cache.
 
+### Telling the two apart at a glance
+
+**JLC assembly** and **LCSC retail** are separate inventories whose stock
+routinely disagrees, and each gets its own column, colour-coded by how healthy
+the figure is (green in stock, amber under 100 pieces, red at zero, grey when
+we have not been told). A `…` means the figure is still being fetched — never
+confused with a confirmed zero.
+
+The **Inventory** switch at the top picks *which one* the window reports on —
+one at a time, not both. It hides the other column and its detail card, and
+re-labels the *in stock only* filter so it always says which warehouse it is
+filtering on. Sorting by either stock figure is in the **Sort** dropdown.
+
+This is a deliberate limit rather than a missing feature. The keyword search
+returns JLC assembly stock for a whole page in one request, but retail stock is
+one request *per part* — so reporting both meant a hundred extra lookups per
+search, re-fired on every filter change. `wmsc.lcsc.com` answers those with a
+403 outright in some regions, and the EasyEDA fallback rate-limits a burst that
+size and then refuses your address for minutes, which left the retail column
+full of `?`. Choosing **JLC assembly** now issues no retail requests at all;
+choosing **LCSC retail** fills the column in the background, two requests at a
+time, and the status line counts what is still loading. If both retail hosts
+refuse, the status line says so instead of showing the column as empty stock.
+
+Search results use catalogue-style rows: a large product photo, model and
+LCSC/library identity, two-line description and category, manufacturer and
+package, the chosen inventory's stock, and unit price/minimum order. Selected-part
+details can open either as a **Side panel** or as a full-width **Inline below**
+expanded row placed directly beneath the selected part, like JLCPCB's parts
+library. The choice is saved.
+
 ## Parametric filters
 
 The JLC parts-library search API returns real per-part attributes
@@ -182,7 +213,10 @@ hyphens** — then restart KiCad.
 | Plugin missing from the menu | Directory name contains hyphens, or KiCad was not restarted |
 | Previews blank, rest works | wxPython without `wx.svg` — run `selfcheck.py` |
 | Stock shows `?` | No CA trust store — run `selfcheck.py`, or set `LCSC_CA_BUNDLE` |
+| Retail column stuck on `…` | LCSC detail endpoint unreachable or rate-limiting; **Refresh** to retry |
+| No product photo | Not every part has one; photos are best-effort and never block the rest |
 | Imported library not in the symbol chooser | KiCad caches lib-tables at startup; restart it |
+| Explorer window opens empty | Should now report the error instead — check the main window's log panel and file it |
 
 ## Using it
 
@@ -190,10 +224,11 @@ hyphens** — then restart KiCad.
 selection):
 
 1. Type a keyword (`22k 0805 0.1%`), an MPN, or an LCSC id (`C374726`).
-2. Narrow with the parametric dropdowns; tick **JLC stock > 0** to hide
-   unbuyable parts.
-3. Select a row — symbol and footprint previews render, both stock figures
-   and all warnings appear.
+2. Pick an **Inventory** — JLC assembly or LCSC retail, whichever you are
+   ordering from. Narrow with the parametric dropdowns, tick **in stock only**
+   to drop unbuyable parts, and **Sort** by stock or price.
+3. Select a row — the availability cards fill first, then the symbol and
+   footprint drawings, then the product photo. Nothing waits on the photo.
 4. **Import symbol + footprint + 3D** writes the part into your library;
    **Assign LCSC number** tags the selected footprints; **Import + assign**
    does both.
@@ -203,6 +238,46 @@ number already assigned on the board — useful when picking the project up on
 the other machine.
 
 **Import symbol/fp** in the original part selector does the same for one part.
+
+## Board ↔ schematic, in whichever direction you ask for
+
+Assigning tags the **footprint**. On its own that leaves the Symbol Fields
+Table empty, the schematic BOM without part numbers, and the assignment at the
+mercy of the next *Update PCB from Schematic*, which pushes the symbol's empty
+LCSC field over it. The reverse happens just as often: a schematic that
+already has every LCSC field filled in, opened here, looks completely
+unassigned because nothing ever put those numbers on the footprints.
+
+Two toolbar buttons, and **nothing happens without pressing one**:
+
+| Button | Direction | What it touches |
+|---|---|---|
+| **From schematic** | symbols → footprints | the board in memory (save the PCB afterwards) |
+| **To schematic** | footprints → symbols | the project's `.kicad_sch` files |
+
+Both show you exactly what they are about to overwrite — reference by
+reference, old number → new number — and do nothing until you confirm. They
+are also genuinely destructive in the direction you pick: the two sides are
+never merged, the one you choose wins.
+
+What each deliberately will not do:
+
+- **Touch a schematic that is open in the Schematic Editor.** The editor holds
+  its own copy in memory and would overwrite anything written underneath it,
+  so *To schematic* says so and stops. Close the Schematic Editor and the
+  numbers go in — reopen it and the Symbol Fields Table has them. *From
+  schematic* still works while it is open, but reads the file on disk, so it
+  warns that unsaved edits are not included.
+- **Clear a number it was not asked to clear.** Going out, only parts you
+  explicitly removed are blanked; a symbol carrying a number the board has not
+  caught up with keeps it. Coming in, a symbol with no number leaves the
+  footprint alone.
+- **Rewrite a file with nothing to change.** Sheets that already match are left
+  untouched; a sheet that is rewritten leaves the previous version beside it as
+  `<name>.kicad_sch_old`.
+
+Hierarchical sheets are followed in both directions, from the root sheet down
+through every `Sheetfile`.
 
 ## Where imported parts land
 
@@ -230,6 +305,9 @@ imported library does not show up in the symbol chooser.
   footprint against the datasheet before committing to a board** — this is a
   convenience importer, not a verified library.
 - Bulk parametric filtering covers the fetched page, not all of LCSC.
+- Schematic sync is text surgery on `.kicad_sch` files, not an API call —
+  KiCad's IPC API does not reach the schematic. It writes nothing while the
+  Schematic Editor has the file open.
 - Stock and price come from unofficial endpoints that can change or rate-limit
   without notice. Failures degrade to "?" rather than crashing.
 
@@ -240,7 +318,8 @@ selfcheck.py           environment diagnostic
 lcsc/api.py            JLC assembly + LCSC retail + JLC search; StockReport
 lcsc/importer.py       EasyEDA -> KiCad library; lib-table registration
 lcsc/explorer.py       the LCSC Explorer dialog
-lcsc/previewpanel.py   wx.svg-backed SVG preview widget
+lcsc/previewpanel.py   symbol/footprint (wx.svg) and photo preview tiles
+lcsc/theme.py          light/dark aware status and inventory colours
 lib/easyeda2kicad/     vendored, zero-dependency converter
 install.sh / .ps1      symlink/junction installer
 UPSTREAM.txt           pinned upstream commits
