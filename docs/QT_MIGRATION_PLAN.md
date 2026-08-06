@@ -586,3 +586,51 @@ From the spike, still in place on the dev machine:
   Enable KiCad API. A clear error beats a silent failure to connect.
 - A throwaway spike plugin at `~/Documents/KiCad/10.0/plugins/lcsc_spike`
   (the magenta `Q` button). Delete that folder before Phase 0.
+
+---
+
+## 10. Progress
+
+One entry per phase, kept current as the work lands. Together with the
+committed screenshots in `docs/screens/`, this is how the migration is resumed
+after a break.
+
+Screens are named `docs/screens/<screen>.png` (plus `<screen>-dark.png`), not
+the `01_`-prefixed form §6 guessed at — `scripts/qt_probe.py --list` is the
+authoritative list.
+
+### Phase 0 — Skeleton and harness ✅
+
+- `lcsc_suite/` package with `kicad_bridge.py`, `config.py`, `app.py`,
+  `ui/theme.py`, `ui/main_window.py`.
+- `kicad_plugin/` holds the manifest and the launcher; `install.sh --app`
+  bootstraps the venv, links the plugin and **checks the API server setting**.
+- `scripts/qt_probe.py` renders offscreen to `docs/screens/`; CI job
+  `.github/workflows/qt-screens.yml` renders every screen in both appearances
+  and fails on an exception or a missing PNG.
+- Screens: `mainwindow.png`, `mainwindow-dark.png`.
+
+Deviations and deferrals, with reasons:
+
+- **`library.py` and `unzip_parts.py` were not "unchanged" after all.** §3
+  claimed `library.py` needs no change, but it imports `wx` and posts progress
+  with `wx.PostEvent`, so the Qt interpreter could not import it at all. Fixed
+  at the seam rather than by stubbing wx: `events.post()` now dispatches to a
+  `post_event` sink when the destination has one and to `wx.PostEvent`
+  otherwise, and the two modules call it. The wx plugin's dialog has no such
+  attribute, so its behaviour is byte-identical. Same reason moved
+  `natural_sort_collation` / `dict_factory` out of `helpers.py` (which imports
+  wx) into `sqlite_helpers.py`, re-exported for existing importers.
+- **`schematicexport.py` imported `pcbnew` for one call.** `GetBuildVersion()`
+  now has an optional import and `load_schematic(paths, version=None)` accepts
+  the version the app already gets over IPC.
+- **Live IPC write verification is deferred to Phase 3.** KiCad shut down
+  during the Phase 0 spike-checking session, so the write path is currently
+  proven against `FixtureBoard`, which reproduces trap 2 exactly
+  (`honour_footprint_writes=False`) — see `tests/test_kicad_bridge.py`. A live
+  pass against a *copy* of a real board belongs in Phase 3, where the trap
+  bites.
+- **Windows verification not yet run** (§7 asks for one pass per phase). No
+  Windows machine is available in this environment; the CI job renders on Linux,
+  which exercises the same Fusion path. Flagged, not silently skipped.
+

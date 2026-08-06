@@ -1,38 +1,63 @@
 #!/usr/bin/env bash
-# Install kicad-lcsc-suite into KiCad's plugin directory (macOS / Linux).
+# Install kicad-lcsc-suite into KiCad's plugin directories (macOS / Linux).
 #
-# Symlinks rather than copies, so `git pull` on any machine updates the
-# installed plugin with no reinstall step.
+# There are two halves, because a migration is underway (docs/QT_MIGRATION_PLAN.md):
 #
-#   ./install.sh                 install into the newest KiCad found
-#   ./install.sh 10.0            install into a specific KiCad version
-#   ./install.sh --dir <path>    install into an explicit plugin directory
-#   ./install.sh --uninstall     remove the symlink
+#   app  the new out-of-process PySide6 application. Bootstraps a virtualenv,
+#        pip-installs PySide6 + kicad-python, and registers an IPC API plugin
+#        in  <kicad>/<ver>/plugins/lcsc_suite  so KiCad shows a toolbar button.
+#   wx   the legacy in-process wxPython plugin. Symlinks the checkout into
+#        <kicad>/<ver>/scripting/plugins/kicad_lcsc_suite. Removed at the
+#        migration's Phase 8 cutover; until then both can be installed at once
+#        and they do not collide.
+#
+#   ./install.sh                 install both halves into the newest KiCad
+#   ./install.sh --app           install only the new Qt app
+#   ./install.sh --wx            install only the legacy wx plugin
+#   ./install.sh 10.0            target a specific KiCad version
+#   ./install.sh --dir <path>    target an explicit KiCad version directory
+#   ./install.sh --uninstall     remove whatever this script installed
 #   ./install.sh --list          just show what would be detected
+#
+# NOTE: the app half adds a one-time setup step (a virtualenv) that the wx
+# plugin never had. That is a deliberate product decision recorded in the
+# migration plan's §8: users gain a UI that behaves the same on macOS and
+# Windows in exchange for running this script once.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Must be a valid Python identifier — the repo directory name has hyphens.
-LINK_NAME="kicad_lcsc_suite"
+WX_LINK_NAME="kicad_lcsc_suite"
+APP_LINK_NAME="lcsc_suite"
+VENV="$SRC/.venv"
+# Pinned rather than floating: the IPC API is young and its wire format has
+# changed between KiCad 10.x point releases. A smoke test that fails loudly on
+# drift is better than a UI that half works.
+APP_REQUIREMENTS=("PySide6>=6.7,<7" "kicad-python>=0.4,<1")
+MIN_PYTHON="3.12"
 
 UNINSTALL=0
 LIST_ONLY=0
+DO_APP=1
+DO_WX=1
 VERSION=""
 EXPLICIT_DIR=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --app)       DO_WX=0 ;;
+        --wx)        DO_APP=0 ;;
         --uninstall) UNINSTALL=1 ;;
         --list)      LIST_ONLY=1 ;;
         --dir)       shift; EXPLICIT_DIR="${1:-}" ;;
-        -h|--help)   sed -n '2,12p' "$0"; exit 0 ;;
+        -h|--help)   sed -n '2,26p' "$0"; exit 0 ;;
         *)           VERSION="$1" ;;
     esac
     shift
 done
 
-# KiCad's user data directory differs per platform. Check every plausible
-# base rather than assuming, so this works on macOS, Linux and WSL.
+# KiCad's user data directory differs per platform. Check every plausible base
+# rather than assuming, so this works on macOS, Linux and WSL.
 case "$(uname -s)" in
     Darwin)
         BASES=("$HOME/Documents/KiCad")
@@ -46,8 +71,8 @@ case "$(uname -s)" in
         ;;
 esac
 
-# Portable "highest version directory" — avoids `sort -V`, which is absent
-# on some BSD/macOS sort builds.
+# Portable "highest version directory" — avoids `sort -V`, which is absent on
+# some BSD/macOS sort builds.
 newest_version_dir() {
     find "$1" -maxdepth 1 -mindepth 1 -type d 2>/dev/null \
         | while read -r d; do basename "$d"; done \
@@ -56,7 +81,7 @@ newest_version_dir() {
         | tail -1
 }
 
-resolve_plugin_dir() {
+resolve_kicad_dir() {
     local base version
     for base in "${BASES[@]}"; do
         [ -d "$base" ] || continue
@@ -66,67 +91,169 @@ resolve_plugin_dir() {
             version="$(newest_version_dir "$base")"
         fi
         [ -n "$version" ] || continue
-        echo "$base/$version/scripting/plugins"
+        echo "$base/$version"
         return 0
     done
     return 1
 }
 
 if [ -n "$EXPLICIT_DIR" ]; then
-    PLUGIN_DIR="$EXPLICIT_DIR"
-elif ! PLUGIN_DIR="$(resolve_plugin_dir)"; then
+    KICAD_DIR="$EXPLICIT_DIR"
+elif ! KICAD_DIR="$(resolve_kicad_dir)"; then
     echo "error: could not find a KiCad user directory. Looked in:" >&2
     printf '  %s\n' "${BASES[@]}" >&2
     echo >&2
     echo "Open KiCad once so it creates its directories, then re-run." >&2
-    echo "Or pass one explicitly:  ./install.sh --dir /path/to/scripting/plugins" >&2
+    echo "Or pass one explicitly:  ./install.sh --dir /path/to/KiCad/10.0" >&2
     exit 1
 fi
 
-TARGET="$PLUGIN_DIR/$LINK_NAME"
+WX_DIR="$KICAD_DIR/scripting/plugins"
+APP_DIR="$KICAD_DIR/plugins"
+WX_TARGET="$WX_DIR/$WX_LINK_NAME"
+APP_TARGET="$APP_DIR/$APP_LINK_NAME"
+
+describe() {
+    local target="$1"
+    if [ -L "$target" ]; then
+        echo "installed -> $(readlink "$target")"
+    elif [ -e "$target" ]; then
+        echo "occupied by a non-symlink"
+    else
+        echo "not installed"
+    fi
+}
 
 if [ "$LIST_ONLY" -eq 1 ]; then
     echo "source      : $SRC"
-    echo "plugin dir  : $PLUGIN_DIR"
-    echo "target      : $TARGET"
-    if [ -L "$TARGET" ]; then
-        echo "status      : installed -> $(readlink "$TARGET")"
-    elif [ -e "$TARGET" ]; then
-        echo "status      : occupied by a non-symlink"
+    echo "KiCad dir   : $KICAD_DIR"
+    echo "app target  : $APP_TARGET"
+    echo "  status    : $(describe "$APP_TARGET")"
+    echo "venv        : $VENV"
+    if [ -x "$VENV/bin/python" ]; then
+        echo "  python    : $("$VENV/bin/python" --version 2>&1)"
+        echo "  PySide6   : $("$VENV/bin/python" -c 'import PySide6;print(PySide6.__version__)' 2>&1 || true)"
     else
-        echo "status      : not installed"
+        echo "  python    : absent"
     fi
+    echo "wx target   : $WX_TARGET"
+    echo "  status    : $(describe "$WX_TARGET")"
     exit 0
 fi
+
+link_or_die() {
+    local target="$1" source="$2"
+    mkdir -p "$(dirname "$target")"
+    if [ -L "$target" ]; then
+        rm "$target"
+    elif [ -e "$target" ]; then
+        echo "error: $target exists and is not a symlink." >&2
+        echo "Move it aside, then re-run this script." >&2
+        exit 1
+    fi
+    ln -s "$source" "$target"
+}
+
+unlink_if_ours() {
+    local target="$1"
+    if [ -L "$target" ]; then
+        rm "$target"
+        echo "Removed $target"
+    elif [ -e "$target" ]; then
+        echo "warning: $target exists but is not a symlink; left alone." >&2
+    else
+        echo "Nothing installed at $target"
+    fi
+}
 
 if [ "$UNINSTALL" -eq 1 ]; then
-    if [ -L "$TARGET" ]; then
-        rm "$TARGET"
-        echo "Removed $TARGET"
-    elif [ -e "$TARGET" ]; then
-        echo "error: $TARGET exists but is not a symlink; remove it by hand." >&2
-        exit 1
-    else
-        echo "Nothing installed at $TARGET"
-    fi
+    [ "$DO_APP" -eq 1 ] && unlink_if_ours "$APP_TARGET"
+    [ "$DO_WX" -eq 1 ] && unlink_if_ours "$WX_TARGET"
+    echo
+    echo "The virtualenv at $VENV was left in place; delete it by hand if you"
+    echo "want it gone."
     exit 0
 fi
 
-mkdir -p "$PLUGIN_DIR"
+# --- the new Qt app --------------------------------------------------------
 
-if [ -L "$TARGET" ]; then
-    rm "$TARGET"
-elif [ -e "$TARGET" ]; then
-    echo "error: $TARGET exists and is not a symlink." >&2
-    echo "Move it aside, then re-run this script." >&2
-    exit 1
+find_python() {
+    # PySide6 needs >= 3.10 and this app targets 3.12+. Prefer the newest
+    # interpreter available rather than whatever `python3` happens to be.
+    local candidate
+    for candidate in python3.14 python3.13 python3.12 python3; do
+        command -v "$candidate" >/dev/null 2>&1 || continue
+        if "$candidate" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)"; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+check_api_server() {
+    # KiCad ships with the IPC API server *off*, and the app cannot connect
+    # without it. A clear instruction here beats a silent failure to connect.
+    local prefs
+    case "$(uname -s)" in
+        Darwin) prefs="$HOME/Library/Preferences/kicad/$(basename "$KICAD_DIR")/kicad_common.json" ;;
+        *)      prefs="${XDG_CONFIG_HOME:-$HOME/.config}/kicad/$(basename "$KICAD_DIR")/kicad_common.json" ;;
+    esac
+    if [ ! -f "$prefs" ]; then
+        echo "note: could not find $prefs to check the API server setting."
+        echo "      Make sure Preferences -> Plugins -> Enable KiCad API is ticked."
+        return
+    fi
+    if grep -q '"enable_server"[[:space:]]*:[[:space:]]*true' "$prefs"; then
+        echo "KiCad API server : enabled"
+    else
+        echo
+        echo "!! KiCad's API server is DISABLED. The LCSC Suite button will not"
+        echo "!! be able to reach your board until you enable it:"
+        echo "!!"
+        echo "!!     KiCad -> Preferences -> Plugins -> Enable KiCad API"
+        echo "!!"
+        echo "!! ($prefs)"
+        echo
+    fi
+}
+
+if [ "$DO_APP" -eq 1 ]; then
+    if [ ! -x "$VENV/bin/python" ]; then
+        if ! PYTHON="$(find_python)"; then
+            echo "error: no Python >= $MIN_PYTHON found." >&2
+            echo "PySide6 needs at least 3.10, and this app targets $MIN_PYTHON+." >&2
+            echo "KiCad's own bundled Python (3.9) cannot run it — that is the" >&2
+            echo "whole reason the app runs out of process." >&2
+            exit 1
+        fi
+        echo "Creating virtualenv at $VENV using $PYTHON"
+        "$PYTHON" -m venv "$VENV"
+    fi
+    echo "Installing app dependencies"
+    "$VENV/bin/python" -m pip install --upgrade --quiet pip
+    "$VENV/bin/python" -m pip install --quiet "${APP_REQUIREMENTS[@]}"
+
+    chmod +x "$SRC/kicad_plugin/run.sh"
+    link_or_die "$APP_TARGET" "$SRC/kicad_plugin"
+
+    echo "Installed the LCSC Suite app"
+    echo "  source : $SRC/kicad_plugin"
+    echo "  target : $APP_TARGET"
+    echo "  python : $("$VENV/bin/python" --version 2>&1)"
+    check_api_server
 fi
 
-ln -s "$SRC" "$TARGET"
+# --- the legacy wx plugin --------------------------------------------------
 
-echo "Installed kicad-lcsc-suite"
-echo "  source : $SRC"
-echo "  target : $TARGET"
+if [ "$DO_WX" -eq 1 ]; then
+    link_or_die "$WX_TARGET" "$SRC"
+    echo "Installed the legacy wx plugin"
+    echo "  source : $SRC"
+    echo "  target : $WX_TARGET"
+fi
+
 echo
-echo "Restart KiCad, then open the PCB editor and use"
-echo "  Tools -> External Plugins -> LCSC Suite"
+echo "Restart KiCad. In the PCB editor you will find:"
+[ "$DO_APP" -eq 1 ] && echo "  the 'LCSC Suite' toolbar button (the new Qt app)"
+[ "$DO_WX" -eq 1 ] && echo "  Tools -> External Plugins -> LCSC Suite (the legacy wx plugin)"

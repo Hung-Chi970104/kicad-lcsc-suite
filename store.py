@@ -19,7 +19,7 @@ from .footprint_metadata import (
     get_assembly_flags,
     get_footprint_pad_count,
 )
-from .helpers import dict_factory, natural_sort_collation
+from .sqlite_helpers import dict_factory, natural_sort_collation
 
 
 class Store:

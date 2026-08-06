@@ -7,6 +7,8 @@ import re
 import wx  # pylint: disable=import-error
 import wx.dataview  # pylint: disable=import-error
 
+from .sqlite_helpers import dict_factory, natural_sort_collation
+
 PLUGIN_PATH = Path(__file__).resolve().parent
 
 
@@ -113,24 +115,7 @@ def loadIconScaled(filename, scale=1.0):
     return wx.Icon(bmp)
 
 
-def natural_sort_collation(a, b):
-    """Natural sort collation for use in sqlite."""
-    if a == b:
-        return 0
-
-    def convert(text):
-        return int(text) if text.isdigit() else text.lower()
-
-    def alphanum_key(key):
-        return [convert(c) for c in re.split("([0-9]+)", key)]
-
-    natorder = sorted([a, b], key=alphanum_key)
-    return -1 if natorder.index(a) == 0 else 1
-
-
-def dict_factory(cursor, row) -> dict:
-    """Row factory that returns a dict."""
-    d = {}
-    for idx, col in enumerate(cursor.description):
-        d[col[0]] = row[idx]
-    return d
+# `natural_sort_collation` and `dict_factory` moved to sqlite_helpers so that
+# store.py and library.py can be imported without wx, which the out-of-process
+# Qt app requires. Re-exported here for existing wx-plugin importers.
+_ = (dict_factory, natural_sort_collation)

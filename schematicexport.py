@@ -25,7 +25,10 @@ import os.path
 import re
 from typing import Dict, List, Optional, Set
 
-from pcbnew import GetBuildVersion  # pylint: disable=import-error
+try:
+    from pcbnew import GetBuildVersion  # pylint: disable=import-error
+except ImportError:  # pragma: no cover - the out-of-process Qt app has no pcbnew
+    GetBuildVersion = None
 
 from .core.version import is_version6, is_version7
 
@@ -174,11 +177,19 @@ class SchematicExport:
             }
         self._targets = assignments
 
-    def load_schematic(self, paths) -> SyncResult:
-        """Write the assignments into the given schematics and their sub-sheets."""
+    def load_schematic(self, paths, version: Optional[str] = None) -> SyncResult:
+        """Write the assignments into the given schematics and their sub-sheets.
+
+        ``version`` selects the KiCad file-format branch below. In-process it
+        comes from ``pcbnew.GetBuildVersion()``; the out-of-process app has no
+        pcbnew and passes the version it got over the IPC API instead. Absent
+        both, the modern (8+) writer is used, which is the only one KiCad 10
+        can produce anyway.
+        """
         result = SyncResult()
         files_seen: Set[str] = set()
-        version = GetBuildVersion()
+        if version is None:
+            version = GetBuildVersion() if GetBuildVersion is not None else ""
         for path in paths:
             if self.skip_locked and is_open_in_editor(path):
                 self.logger.warning(
@@ -186,9 +197,9 @@ class SchematicExport:
                 )
                 result.skipped_locked.append(path)
                 continue
-            if is_version6(version):
+            if version and is_version6(version):
                 self._update_schematic6(path, result)
-            elif is_version7(version):
+            elif version and is_version7(version):
                 self._update_schematic7(path, result)
             else:
                 self._update_schematic(path, result, files_seen)

@@ -55,10 +55,18 @@ Entry points:
    Available there: the stdlib, `wx` (incl. `wx.svg`), `pcbnew`, and what
    KiCad ships (`requests`, `certifi`), plus the vendored
    `lib/easyeda2kicad/`. Existing `lcsc/` code sticks to `urllib` + stdlib.
-   The *new app* runs in its own venv and may depend on `PySide6` and
-   `kicad-python`; add anything further deliberately, since every dependency
-   ships to users. `pyproject.toml`'s `dependencies` list belongs to the
-   `db_build`/`common` tooling, *not* to the wx plugin.
+
+   The *new app* **does** require a one-time setup step, and that is a product
+   decision, not an oversight: `install.sh` / `install.ps1` bootstrap a `.venv`
+   and pip-install `PySide6` and `kicad-python`. Users gain a UI that behaves
+   identically on macOS and Windows in exchange for running the installer once.
+   A PyInstaller freeze replaces the venv before any public release; because
+   `runtime.type` is `exec`, that swap touches only `kicad_plugin/run.sh`.
+   Add further dependencies deliberately — every one ships to users. The venv's
+   contents are pinned in `install.sh`'s `APP_REQUIREMENTS`.
+
+   `pyproject.toml`'s `dependencies` list belongs to the `db_build`/`common`
+   tooling, and to neither half of the plugin.
 4. **Never edit `lib/`.** It is vendored upstream code, excluded from ruff
    and pre-commit. Changes belong upstream or in a wrapper.
 5. **AGPL boundary.** `lib/easyeda2kicad/` is AGPL-3.0; the rest is MIT. See
@@ -68,6 +76,18 @@ Entry points:
 ## Where things live
 
 ```text
+lcsc_suite/            THE NEW APP — out-of-process PySide6, own venv (3.12+)
+  kicad_bridge.py      the only module that touches KiCad; closes all three IPC traps
+  shared.py            imports the toolkit-free logic modules from the repo root
+  config.py            settings in the per-user config dir, imported once from the wx plugin
+  app.py               QApplication bootstrap (Fusion + palette + font)
+  ui/                  the widgets; ui/theme.py is the Qt port of lcsc/theme.py
+  fixtures/board.json  a 110-footprint board for the probe, CI and the bridge tests
+kicad_plugin/          what gets installed into KiCad's plugins/ dir
+  plugin.json          the IPC API manifest; runtime.type = exec
+  run.sh / run.cmd     launcher; unsets PYTHONHOME (trap 1) then runs the venv Python
+scripts/qt_probe.py    renders any screen offscreen to docs/screens/*.png
+
 mainwindow.py          JLCPCBTools — the main dialog; owns Library, Store, Fabrication
 lcsc/                  the LCSC Explorer feature (this fork's addition)
   api.py               JLC assembly + LCSC retail + JLC search; StockReport, SearchHit,
@@ -212,9 +232,30 @@ python3 -m venv .venv && .venv/bin/pip install pytest ruff   # not preinstalled
 .venv/bin/ruff check && .venv/bin/ruff format --check
 ```
 
-Verify GUI changes **with KiCad's own interpreter**, headlessly — build the
-dialog against a stub parent, drive it with `wx.CallLater`, and assert on
-geometry. `screencapture` is unavailable. Recipe in
+Verify GUI changes **with a screenshot**, in both halves.
+
+*New Qt app* — renders offscreen, no display and no permissions needed:
+
+```bash
+./install.sh --app                              # bootstraps .venv once
+.venv/bin/python scripts/qt_probe.py --all      # writes docs/screens/*.png
+```
+
+Commit the updated PNG in the same commit as the UI change. A geometry dump
+(`--geometry`) is a supplement, never a substitute — mistaking one for the
+other is the reason this migration exists.
+
+*Legacy wx plugin* — build the dialog against a stub parent with **KiCad's own
+interpreter**, because that is the wx build whose assertions matter:
+
+```bash
+/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 scripts/gui_probe.py explorer
+```
+
+wx windows can be captured offscreen too (`wx.WindowDC` → `wx.Bitmap`), and
+`screencapture` does work on the current dev machine. But a macOS screenshot of
+a **wx** window says nothing about Windows, because wx wraps native controls —
+which is precisely the limitation Qt fixes. Recipe in
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#verifying-gui-changes-headlessly).
 
 Check the environment a change assumes:
