@@ -733,6 +733,20 @@ class FixtureBoard(_Board):
     def info(self) -> BoardView:
         return self._info
 
+    def relocate(self, project_path: str) -> None:
+        """Point the fixture's project at a real directory.
+
+        The committed fixture names a path that does not exist, deliberately —
+        it must not depend on anything outside the checkout. But ``store.py``
+        creates ``<project>/jlcpcb/project.db`` for real, so a probe or a test
+        has to hand it somewhere writable first.
+        """
+        self._info = replace(
+            self._info,
+            project_path=project_path,
+            path=os.path.join(project_path, self._info.name),
+        )
+
     def _read_footprints(self) -> Iterable[FootprintView]:
         for reference in self._order:
             row = self._committed[reference]

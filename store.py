@@ -44,7 +44,12 @@ class Store:
         self.order_by = "reference"
         self.order_dir = "ASC"
         self.setup()
-        self.update_from_board()
+        if board is not None:
+            self.update_from_board()
+        # `board=None` is the out-of-process app: it has no pcbnew object to read
+        # and calls `update_from_parts` with bridge snapshots instead. Doing that
+        # here rather than in __init__ keeps the two callers from having to agree
+        # on what a "board" is.
 
     def setup(self):
         """Check if folders and database exist, setup if not."""
@@ -331,12 +336,28 @@ class Store:
             cur.commit()
 
     def backfill_estimator_metadata(self, footprint, db_part: dict):
-        """Backfill estimator metadata when missing or stale."""
-        pad_count = get_footprint_pad_count(footprint)
-        has_tht = footprint_has_tht(footprint)
-        assembly_flags = get_assembly_flags(footprint)
+        """Backfill estimator metadata from a **pcbnew** footprint.
 
-        ref = footprint.GetReference()
+        The in-process entry point. The out-of-process app has no pcbnew and
+        supplies the same three figures itself; see `backfill_part_metadata`.
+        """
+        self.backfill_part_metadata(
+            {
+                "reference": footprint.GetReference(),
+                "pad_count": get_footprint_pad_count(footprint),
+                "has_tht": footprint_has_tht(footprint),
+                "assembly_flags": get_assembly_flags(footprint),
+            },
+            db_part,
+        )
+
+    def backfill_part_metadata(self, part: dict, db_part: dict):
+        """Backfill estimator metadata when missing or stale."""
+        ref = part["reference"]
+        pad_count = part.get("pad_count")
+        has_tht = part.get("has_tht")
+        assembly_flags = part.get("assembly_flags")
+
         if not db_part:
             db_part = self.get_part(ref)
         if not db_part:
@@ -360,16 +381,40 @@ class Store:
         self.logger.debug("Updated estimator metadata for %s", ref)
 
     def update_from_board(self):
-        """Read all footprints from the board and insert them into the database if they do not exist."""
-        for fp in get_valid_footprints(self.board):
-            board_part = {
-                "reference": fp.GetReference(),
-                "value": fp.GetValue(),
-                "footprint": str(fp.GetFPID().GetLibItemName()),
-                "lcsc": get_lcsc_value(fp),
-                "exclude_from_bom": get_exclude_from_bom(fp),
-                "exclude_from_pos": get_exclude_from_pos(fp),
-            }
+        """Read all footprints from the **pcbnew** board into the database.
+
+        The in-process entry point; it only turns footprints into the plain part
+        records `update_from_parts` works on. The out-of-process app has no
+        pcbnew and builds those records from `kicad_bridge.FootprintView`
+        snapshots instead, so the reconciliation logic — which is where the
+        lcsc_priority rule and the "something changed, clear the number" rule
+        live — is shared rather than written twice.
+        """
+        self.update_from_parts(
+            [
+                {
+                    "reference": fp.GetReference(),
+                    "value": fp.GetValue(),
+                    "footprint": str(fp.GetFPID().GetLibItemName()),
+                    "lcsc": get_lcsc_value(fp),
+                    "exclude_from_bom": get_exclude_from_bom(fp),
+                    "exclude_from_pos": get_exclude_from_pos(fp),
+                    "pad_count": get_footprint_pad_count(fp),
+                    "has_tht": footprint_has_tht(fp),
+                    "assembly_flags": get_assembly_flags(fp),
+                }
+                for fp in get_valid_footprints(self.board)
+            ]
+        )
+
+    def update_from_parts(self, parts: list):
+        """Reconcile the database against the parts currently on the board.
+
+        Each entry needs `reference`, `value`, `footprint`, `lcsc`,
+        `exclude_from_bom`, `exclude_from_pos`, and the three estimator figures
+        `pad_count`, `has_tht` and `assembly_flags`.
+        """
+        for board_part in parts:
             db_part = self.get_part(board_part["reference"])
             # if part is not in the database yet, create it
             if not db_part:
@@ -423,17 +468,28 @@ class Store:
                     board_part["reference"],
                 )
                 self.update_part(board_part)
-            self.backfill_estimator_metadata(fp, db_part)
+            self.backfill_part_metadata(board_part, db_part)
         self.import_legacy_assignments()
-        self.clean_database()
+        self.clean_database([part["reference"] for part in parts])
 
-    def clean_database(self):
-        """Delete all parts from the database that are no longer present on the board."""
-        refs = [f"'{fp.GetReference()}'" for fp in get_valid_footprints(self.board)]
+    def clean_database(self, references=None):
+        """Delete all parts from the database that are no longer on the board."""
+        if references is None:
+            references = [fp.GetReference() for fp in get_valid_footprints(self.board)]
+        references = list(references)
         with contextlib.closing(sqlite3.connect(self.dbfile)) as con, con as cur:
-            cur.execute(
-                f"DELETE FROM part_info WHERE reference NOT IN ({','.join(refs)})"
-            )
+            if not references:
+                # `NOT IN ()` is a syntax error, and an empty board really does
+                # mean every row is stale.
+                cur.execute("DELETE FROM part_info")
+            else:
+                # The f-string only injects ?-placeholders; the references
+                # themselves are bound, never interpolated.
+                placeholders = ",".join("?" for _ in references)
+                cur.execute(
+                    f"DELETE FROM part_info WHERE reference NOT IN ({placeholders})",
+                    references,
+                )
             cur.commit()
 
     def import_legacy_assignments(self):
