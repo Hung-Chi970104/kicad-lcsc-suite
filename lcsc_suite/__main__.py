@@ -13,6 +13,7 @@ import sys
 
 from . import app as app_module, kicad_bridge
 from .config import Settings, legacy_settings_path
+from .single_instance import SingleInstance
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Force an appearance instead of following the desktop.",
     )
     parser.add_argument("--debug", action="store_true", help="Log at DEBUG.")
+    parser.add_argument(
+        "--allow-multiple",
+        action="store_true",
+        help="Skip the single-instance guard. For debugging only — two windows "
+        "on one board share a project database and will overwrite each other.",
+    )
     # KiCad appends its own arguments to the entrypoint; accept and ignore
     # anything unrecognised rather than exiting with a usage error the user
     # will never see.
@@ -58,10 +65,22 @@ def main(argv=None) -> int:
         QMessageBox.critical(None, "LCSC Suite", str(exc))
         return 1
 
+    info = board.info()
+
+    # KiCad runs the launcher afresh on every toolbar click, so the guard has to
+    # live here rather than in a window lookup. Two windows on one board share a
+    # project database and would quietly overwrite each other.
+    guard = SingleInstance(info.path)
+    if not args.allow_multiple and not guard.acquire():
+        log.info("An LCSC Suite window is already open for %s; raised it.", info.name)
+        return 0
+
     from .ui.main_window import MainWindow
 
     settings = Settings(legacy_path=legacy_settings_path())
     window = MainWindow(board, settings=settings)
+    guard.raise_requested.connect(window.raise_to_front)
+    application.aboutToQuit.connect(guard.release)
     window.show()
     return application.exec()
 
