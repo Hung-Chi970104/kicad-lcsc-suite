@@ -32,8 +32,28 @@ Three reasons, in order of weight.
 
 - No KiCad 9 or earlier support. KiCad 10 only.
 - No rewrite of the network layer. See §4.
-- No feature changes. This is a port; behaviour and layout carry over. New
-  features come after parity.
+- No feature changes beyond the removal below. This is a port; behaviour and
+  layout carry over. New features come after parity.
+
+### Out of scope — Gerber and drill generation (decided 2026-08-07)
+
+**Gerber and Excellon drill output is dropped, not ported.** Another plugin
+the user already trusts handles fabrication output. This removes the only
+phase whose feasibility was never proven (`PLOT_CONTROLLER` → `kicad-cli`),
+and with it the plan's highest risk.
+
+Deleted outright: the `Generate` button and its `Auto` dropdown,
+`fabrication.py`'s plot path, `kicad_drc.py`, `generate_hooks.py`, `HOOKS.md`,
+the pre/post generation hooks, and every Gerber-plotting setting (tented vias,
+fill zones, force DRC, plot values, plot references, subtract soldermask,
+order-number placeholder check).
+
+**Kept: the BOM and CPL writers.** They are the LCSC-specific output nothing
+else can produce — the other plugin does not know this project's LCSC
+assignments — and the CPL is what consumes the rotation/offset corrections, so
+dropping it would cascade into deleting the whole Corrections subsystem
+(`corrections.py`, its dialog, and its database). They are pure logic that
+needed no porting anyway; only the plot path did.
 
 ---
 
@@ -52,7 +72,7 @@ KiCad 10 (pcbnew)                         LCSC Suite (separate process)
 │                                          ├─ PySide6 UI (Fusion style)
 └─◄──── IPC API (kipy) ───────────────────┤─ lcsc/ network layer (unchanged)
      board, footprints, fields, commits    ├─ SQLite stores (unchanged)
-                                           └─ kicad-cli for fabrication output
+                                           └─ BOM / CPL writers (pure logic)
 ```
 
 The manifest declares the button. `runtime.type: "exec"` is the key: KiCad
@@ -98,7 +118,7 @@ plan was written, not assumed:
 | Create `LCSC` field where none existed | ✅ verified by re-read |
 | Exclude-from-BOM / exclude-from-POS / DNP attributes | ✅ plain booleans |
 | Qt offscreen render → self-screenshot | ✅ no display needed |
-| Gerber / drill / position export | ⚠️ `kicad-cli` subcommands exist, **not exercised** |
+| Footprint position + rotation (for CPL) | ⚠️ exposed on the API, **not exercised** |
 
 ### Three traps found in the spike — read before writing code
 
@@ -156,7 +176,7 @@ Already free of wx, and in most cases free of pcbnew:
 | `corrections.py` (logic half) | — | none (SQLite only) |
 | `schematicexport.py` | 466 | none — parses `.kicad_sch` directly |
 | `store.py` | 454 | none (SQLite only) |
-| `fabrication.py` | 511 | **rewrite plot path** → `kicad-cli` |
+| `fabrication.py` | 511 | **strip the plot path**; keep BOM/CPL writers |
 | `lcsc/importer.py` | 399 | none |
 | `lcsc/details.py` | 278 | strip 2 wx references |
 | `schematicimport.py` | 209 | none |
@@ -199,8 +219,8 @@ Action pipeline.
   code (`create_disabled_bitmap`) is deleted rather than ported. The icons
   themselves need `@2x` variants for high-DPI, which the manifest already
   supports via multiple paths per `icons-light`/`icons-dark` entry.
-- **`selfcheck.py`** imports pcbnew for diagnostics. Either port it to the
-  bridge or drop it — decide in Phase 0, do not leave it half-broken.
+- **`selfcheck.py`** imports pcbnew for diagnostics. Drop it — most of what it
+  checked was fabrication readiness, which is now out of scope.
 
 ---
 
@@ -244,8 +264,9 @@ offscreen wx capture; these are the reference for visual parity.
 
 ### 5.1 Main window — 1300×772
 
-**Upper-left toolbar:** `Generate` (fabrication files for JLCPCB), with an
-adjacent `Auto` dropdown button.
+**Upper-left toolbar:** in the wx version this is `Generate` plus an `Auto`
+dropdown. **Both are dropped** (§1). Replace with a single `Export BOM / CPL`
+button; the left toolbar is otherwise empty.
 
 **Upper-right toolbar**, left to right: `From schematic`, `To schematic`,
 `Corrections`, `Mappings`, `LCSC Explorer`, `Import libs`, `Offline DB`,
@@ -335,24 +356,29 @@ per search row, so a full grid costs no extra JSON lookups.
 
 ### 5.3 Settings
 
-Two-column grid of icon + checkbox:
+The wx dialog is a two-column grid of icon + checkbox. **Most of it is
+Gerber-plotting settings and is dropped** (§1): tented vias, fill zones, force
+DRC, plot values, plot references, subtract soldermask, order-number
+placeholder, and the whole `Generation hooks` group.
 
-`Tented vias` · `Fill zones` · `Force DRC check before Gerber export - Saves
-board and fills zones!` · `Plot values on silkscreen` · `Plot references on
-silkscreen` · `Subtract soldermask from silkscreen` · `LCSC numbers from
-database have priority` · `Add parts without LCSC number to BOM/POS` ·
-`Check if an order/serial number placeholder is placed` ·
-`Match highlighting` / `Highlight search matches` ·
-`Highlight standard-mode trigger parts` · `Show BOM cost estimator` · `Help`.
+**What remains** — a much smaller dialog:
 
-Each checkbox has a paired inverted tooltip/label (e.g. `Don't tent vias`)
-that swaps with state.
+- `LCSC numbers from database have priority`
+- `Add parts without LCSC number to BOM/POS`
+- `Highlight search matches` (under a `Match highlighting` label)
+- `Highlight standard-mode trigger parts`
+- `Show BOM cost estimator`
+- `Parts Library:` dropdown — `Current Parts (Exclude Obsolete)` and the other
+  variants from `dblib/__init__.py`
+- `Database directory:` field + `Browse`
+- `Help`
 
-Below: `Parts Library:` dropdown (Current Parts (Exclude Obsolete) / all
-variants from `dblib/__init__.py`) · `Database directory:` field + `Browse`.
+Each checkbox has a paired inverted label (e.g. `Don't highlight search
+matches`) that swaps with state. Since this dialog is now small, lay it out as
+a single column rather than reproducing the two-column grid.
 
-`Generation hooks` group: `Pre-generate hook script:` + Browse ·
-`Post-generate hook script:` + Browse · `Hook timeout (seconds):` spin (30).
+`create_disabled_bitmap` (the hand-drawn red X) is deleted — Qt renders
+disabled icons natively.
 
 ### 5.4 Corrections Manager
 
@@ -446,21 +472,17 @@ carry over unchanged.
 
 Settings, Corrections, Mappings, Part Details, BOM estimator.
 
-### Phase 6 — Fabrication
+### Phase 6 — BOM / CPL export
 
-Rewrite the plot path onto `kicad-cli`:
+Not fabrication — see §1. Only the two files that carry LCSC data:
 
-| Output | Command |
-|---|---|
-| Gerbers | `kicad-cli pcb export gerbers` |
-| Drill | `kicad-cli pcb export drill` |
-| Position | `kicad-cli pcb export pos --format csv` |
+- **BOM**: designator grouping, LCSC number, exclusions from `store.py`.
+- **CPL**: position data with rotation/offset corrections applied.
 
-The BOM/CPL writers, rotation/offset corrections and the zip packaging in
-`fabrication.py` are pure logic and stay. Pre/post generation hooks and the
-timeout stay. **Risk: the only phase whose feasibility is unproven** — the
-subcommands exist but were not exercised in the spike. Validate against
-known-good output from the wx plugin before deleting the old path.
+Both writers already exist in `fabrication.py` as pure logic and are covered by
+`tests/test_fabrication_corrections.py`. Work here is a UI entry point plus
+reading footprint positions through the bridge instead of pcbnew. Verify by
+byte-comparing output against the wx plugin on the same board.
 
 ### Phase 7 — Schematic sync
 
@@ -471,7 +493,7 @@ dialogs are rebuilt.
 ### Phase 8 — Parity gate, then cutover
 
 - Side-by-side screenshot review of every screen against `docs/screens/`.
-- Same board through both versions: identical Gerbers, BOM and CPL.
+- Same board through both versions: identical BOM and CPL.
 - Windows verification (see §7).
 - Only then remove the wx plugin and the `install.sh` symlink path.
 
@@ -538,8 +560,7 @@ who do not clone the repo.
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| `kicad-cli` output differs from `PLOT_CONTROLLER` | **high** — Phase 6 is unproven | Byte-compare against wx-plugin output on a real board before cutover |
-| Silent no-op writes (trap #2) | high | Read-back assertions in every bridge write; no exceptions |
+| Silent no-op writes (trap #2) | **high** | Read-back assertions in every bridge write; no exceptions |
 | IPC API changes between KiCad 10.x releases | medium | Pin `kicad-python`; a smoke test that fails loudly on API drift |
 | Explorer is 2918 lines of subtle threading | medium | Phase 4 sub-ordered; port `api.py` untouched so only UI threading is new |
 | Upstream merges get harder | medium | Already true; `UPSTREAM.txt` fork is diverging regardless. Accept and record it |

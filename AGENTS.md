@@ -33,21 +33,32 @@ Entry points:
 
 ## Hard rules
 
-1. **Python 3.9.** KiCad bundles 3.9 (verified: 3.9.13 on macOS). Use
+0. **A migration is underway.** The UI is moving out-of-process to PySide6 on
+   KiCad 10's IPC API — see
+   [docs/QT_MIGRATION_PLAN.md](docs/QT_MIGRATION_PLAN.md). Rules 1 and 3 below
+   are scoped to the **legacy wx plugin** and do not constrain `lcsc_suite/`.
+   Gerber and drill generation are **out of scope** and being removed; BOM and
+   CPL stay.
+1. **Python 3.9 — legacy wx plugin only.** KiCad bundles 3.9 (verified:
+   3.9.13 on macOS, still true on **KiCad 10.0.3**). In the wx plugin use
    `Optional[X]`, `Dict[...]`, `List[...]` — never `X | None`, never
    `match`/`case`, never `typing.Self`/`TypeAlias`/`ParamSpec`.
    `pyproject.toml` pins `UP006/UP007/UP035/UP038/UP045` **off** so ruff
-   cannot rewrite these into 3.10-only syntax. Do not re-enable them.
-   *Exception:* `db_build/` runs in GitHub Actions on ≥3.10.
+   cannot rewrite these into 3.10-only syntax. Do not re-enable them while the
+   wx plugin lives.
+   *Exceptions:* `db_build/` (GitHub Actions, ≥3.10) and `lcsc_suite/` (own
+   venv, 3.12+).
 2. **ruff-clean commits.** `ruff check` and `ruff format --check` must pass.
    When editing a file, reformat only the lines you intend to change.
-3. **No new runtime dependencies.** The plugin must run on a bare KiCad
-   install — nothing the user has to `pip install`. Available: the stdlib,
-   `wx` (incl. `wx.svg`), `pcbnew`, and what KiCad happens to ship
-   (`requests`, `certifi`), plus the vendored `lib/easyeda2kicad/`.
-   New `lcsc/` code deliberately sticks to `urllib` + stdlib rather than
-   `requests`. `pyproject.toml`'s `dependencies` list belongs to the
-   `db_build`/`common` tooling, *not* to the plugin.
+3. **Dependencies: legacy plugin none, new app declared.** The *wx plugin*
+   must run on a bare KiCad install — nothing the user has to `pip install`.
+   Available there: the stdlib, `wx` (incl. `wx.svg`), `pcbnew`, and what
+   KiCad ships (`requests`, `certifi`), plus the vendored
+   `lib/easyeda2kicad/`. Existing `lcsc/` code sticks to `urllib` + stdlib.
+   The *new app* runs in its own venv and may depend on `PySide6` and
+   `kicad-python`; add anything further deliberately, since every dependency
+   ships to users. `pyproject.toml`'s `dependencies` list belongs to the
+   `db_build`/`common` tooling, *not* to the wx plugin.
 4. **Never edit `lib/`.** It is vendored upstream code, excluded from ruff
    and pre-commit. Changes belong upstream or in a wrapper.
 5. **AGPL boundary.** `lib/easyeda2kicad/` is AGPL-3.0; the rest is MIT. See

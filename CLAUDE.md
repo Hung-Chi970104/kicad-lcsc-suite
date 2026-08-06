@@ -25,10 +25,27 @@ clean at HEAD; `ruff format --check` does **not** — four untouched upstream
 files (`corrections.py`, `events.py`, `kicad_drc.py`, `partdetails.py`) would
 be reformatted. Leave them alone.
 
+## Migration in progress
+
+The UI is being rewritten as an out-of-process **PySide6** app driven over
+KiCad 10's IPC API. Read **[docs/QT_MIGRATION_PLAN.md](docs/QT_MIGRATION_PLAN.md)**
+before touching UI code — it carries the screen inventory, the phase order, and
+three IPC traps that each cost real time to find.
+
+Which rules apply depends on which half you are in:
+
+| | Legacy wx plugin (repo root) | New app (`lcsc_suite/`) |
+|---|---|---|
+| Interpreter | KiCad's bundled **Python 3.9** | own venv, **3.12+** |
+| Toolkit | wxPython | PySide6 (Fusion style) |
+| Verify with | `scripts/gui_probe.py` | `scripts/qt_probe.py` |
+
+Keep the legacy plugin working until the plan's Phase 8 cutover.
+
 ## Python version compatibility
 
-KiCad's internal Python interpreter is **Python 3.9**. All code that is executed in the
-plugin must be 3.9-compatible.
+**Legacy wx plugin only.** KiCad's internal Python interpreter is
+**Python 3.9**, so anything imported by the wx plugin must be 3.9-compatible.
 
 - Use `Optional[X]` instead of `X | None`
 - No `match`/`case` statements
@@ -38,16 +55,38 @@ PEP 585 builtin generics (`list[str]`, `dict[str, int]`) *are* fine on 3.9.
 PEP 604 unions are not, unless the module opens with
 `from __future__ import annotations`.
 
-Note that files in the db_build directory use python >= 3.10, that is executed as a
-github action and is not subject to the Python 3.9 guidance.
+This does **not** apply to `lcsc_suite/` (own interpreter), `db_build/`
+(GitHub Action), or shared logic modules once nothing on 3.9 imports them.
 
 ## Verifying UI changes
 
-wx dialogs have no automated coverage, and KiCad's wxWidgets raises
-assertions as Python exceptions — one bad sizer flag aborts a dialog
-mid-build with no error message. Probe dialogs headlessly with KiCad's own
-interpreter before claiming a UI change works:
+**Never claim a UI change works without looking at a screenshot.** Geometry
+dumps miss what users see; that mistake is the reason this migration exists.
+
+New Qt app — renders with no display, no permissions, works in CI:
+
+```bash
+.venv/bin/python scripts/qt_probe.py explorer   # writes docs/screens/explorer.png
+```
+
+Commit the updated PNG in the same commit as the UI change, so the diff shows
+the visual change.
+
+Legacy wx dialogs — KiCad's wxWidgets raises assertions as Python exceptions,
+and one bad sizer flag aborts a dialog mid-build with no error message:
 
 ```bash
 /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 scripts/gui_probe.py explorer
 ```
+
+wx windows can also be screenshotted offscreen (`wx.WindowDC` → `wx.Bitmap`),
+and `screencapture` works on macOS. Note that a macOS screenshot of a **wx**
+window says nothing about Windows, because wx wraps native controls — that
+limitation is precisely what Qt fixes.
+
+## Writing to the board over IPC
+
+`board.update_items(field)` returns success and **silently changes nothing**.
+Writes must target the parent footprint. Always assert by re-reading the
+board — a clean return value proves nothing. See the plan's §2 for all three
+traps.
