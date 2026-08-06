@@ -27,8 +27,10 @@ Exit status is nonzero if any screen raised while building.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
+import tempfile
 import traceback
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -79,8 +81,6 @@ def probe_settings() -> Settings:
     A screenshot that depends on whatever the developer last toggled is not
     evidence about anything. Writes go to a throwaway path.
     """
-    import tempfile
-
     # A path inside a throwaway directory, not a file: Settings treats an
     # existing-but-empty file as corrupt and says so, which is noise here.
     scratch = tempfile.mkdtemp(prefix="lcsc-probe-")
@@ -157,12 +157,45 @@ def dump_table(view, label: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def screen_mainwindow(context) -> QWidget:
-    """Build the main window (plan §5.1)."""
+def _main_window(context):
+    """Build the main window against the probe's board and settings."""
+    from lcsc_suite.parts import PartList
     from lcsc_suite.ui.main_window import MainWindow
 
-    window = MainWindow(context.board, settings=context.settings)
+    window = MainWindow(
+        context.board,
+        settings=context.settings,
+        parts=PartList(context.board, settings=context.settings),
+    )
     window.show()
+    return window
+
+
+def screen_mainwindow(context) -> QWidget:
+    """Build the main window (plan §5.1)."""
+    return _main_window(context)
+
+
+def screen_mainwindow_unassigned(context) -> QWidget:
+    """Build the main window scrolled to the first part needing a number.
+
+    A separate screen because the default view does not reach one: the fixture's
+    unassigned-and-in-the-BOM parts sit well down an alphabetical list, and the
+    row colouring is the thing most worth being able to look at. Red here means
+    "in the BOM with nothing for JLC to place" — the one actionable failure the
+    list can show. Mounting holes and test points are excluded from the BOM and
+    are deliberately *not* marked.
+    """
+    from lcsc_suite.ui.models.part_table import REFERENCE_ROLE
+
+    window = _main_window(context)
+    table = window.part_table
+    model = table.model()
+    wanted = {row.reference for row in window.part_model.rows() if row.needs_a_number}
+    for row in range(model.rowCount()):
+        if model.data(model.index(row, 0), REFERENCE_ROLE) in wanted:
+            table.scrollTo(model.index(row, 0), table.ScrollHint.PositionAtTop)
+            break
     return window
 
 
@@ -170,6 +203,7 @@ def screen_mainwindow(context) -> QWidget:
 #: adding a screen here is what puts it under CI.
 SCREENS = {
     "mainwindow": screen_mainwindow,
+    "mainwindow-unassigned": screen_mainwindow_unassigned,
 }
 
 
@@ -183,10 +217,17 @@ class Context:
 
 
 def open_board(args):
-    """Open the board a probe run should render against."""
+    """Open the board a probe run should render against.
+
+    The fixture is pointed at a fresh temporary project directory: store.py
+    really does create ``<project>/jlcpcb/project.db``, and a probe run must not
+    write into the checkout or carry state between runs.
+    """
     if args.live:
         return kicad_bridge.connect()
-    return kicad_bridge.open_fixture(args.fixture)
+    board = kicad_bridge.open_fixture(args.fixture)
+    board.relocate(tempfile.mkdtemp(prefix="lcsc-probe-project-"))
+    return board
 
 
 def render(name: str, context: Context, output_dir: str, mode: str) -> tuple[bool, str]:
@@ -256,6 +297,10 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--list", action="store_true", help="list the screens and exit")
     args = parser.parse_args(argv)
+    # INFO, so the log pane shows what a real session shows. store.py logs a
+    # DEBUG line per part, and derive_params calls basicConfig(DEBUG) at import,
+    # which would otherwise fill the pane with reconciliation chatter.
+    app_module.configure_logging(logging.INFO)
 
     if args.list:
         for name in sorted(SCREENS):
@@ -275,8 +320,13 @@ def main(argv=None) -> int:
     for mode in modes:
         application = app_module.build_application(theme_mode=mode, offscreen=True)
         board = open_board(args)
-        context = Context(board, probe_settings(), args)
         for name in names:
+            # Fresh settings per screen: the main window saves its geometry on
+            # close, and the next screen would restore it — which offscreen means
+            # being clamped to the 800x800 virtual screen and rendering at the
+            # wrong size for a reason that has nothing to do with the screen
+            # under review.
+            context = Context(board, probe_settings(), args)
             ok, problem = render(name, context, args.out, mode)
             if not ok:
                 failures.append(problem)

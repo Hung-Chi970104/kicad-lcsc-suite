@@ -31,7 +31,14 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QAbstractTableModel, QByteArray, Qt, Signal
+from PySide6.QtCore import (
+    QByteArray,
+    QItemSelection,
+    QItemSelectionModel,
+    QSortFilterProxyModel,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -39,6 +46,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -53,6 +61,12 @@ from PySide6.QtWidgets import (
 from ..kicad_bridge import Board
 from .icons import ICON_SIZE, icon
 from .log_pane import LogPane
+from .models.part_table import (
+    COLUMNS as MODEL_COLUMNS,
+    REFERENCE_ROLE,
+    SORT_ROLE,
+    PartTableModel,
+)
 
 log = logging.getLogger(__name__)
 
@@ -74,56 +88,25 @@ PART_TOOLBAR_WIDTH = 152
 #: splitter lets anyone who wants a taller log drag for it.
 LOG_HEIGHT = 128
 
-#: Part-list columns, in the order §5.1 specifies. Widths are the wx plugin's.
-#: Populated in Phase 2; the header exists from Phase 1 so the shell can be
-#: reviewed against the reference screenshot.
-COLUMNS = (
-    ("Ref", 60),
-    ("Value (Name)", 150),
-    ("Footprint", 250),
-    ("LCSC Params", 170),
-    ("LCSC", 100),
-    ("Type", 100),
-    # Named for the warehouse it reports on. This is JLC *assembly* stock —
-    # what JLC will place on a board — never LCSC retail, a separate warehouse
-    # whose count routinely disagrees by orders of magnitude. A bare "Stock"
-    # left that to be guessed at.
-    ("JLC Stock", 110),
-    ("BOM", 55),
-    ("POS", 55),
+#: Part-list columns, in §5.1's order, with the wx plugin's widths. Defined
+#: alongside the model that fills them, so a new column cannot be added to one
+#: and forgotten in the other.
+COLUMNS = MODEL_COLUMNS
+
+
+#: §5.1's row context menu: ``(id, label)``, ``None`` for a separator. Ids are
+#: what a controller dispatches on; the labels are free to be reworded.
+ROW_MENU = (
+    ("copy-lcsc", "Copy LCSC"),
+    ("paste-lcsc", "Paste LCSC"),
+    (None, None),
+    ("correction-by-reference", "Add correction by reference"),
+    ("correction-by-package", "Add correction by package"),
+    ("correction-by-name", "Add correction by name"),
+    (None, None),
+    ("find-mapping", "Find mapping"),
+    ("add-mapping", "Add mapping"),
 )
-
-
-class _HeaderOnlyModel(QAbstractTableModel):
-    """An empty table that still knows its column headings.
-
-    Phase 1 scaffolding, replaced in Phase 2 by the real model over
-    ``store.py``. It exists so the shell's screenshot shows the nine columns and
-    their widths, which is the thing being reviewed.
-    """
-
-    def __init__(self, headers: list[str]) -> None:
-        super().__init__()
-        self._headers = headers
-
-    def rowCount(self, parent=None) -> int:  # noqa: N802 - Qt override
-        return 0
-
-    def columnCount(self, parent=None) -> int:  # noqa: N802 - Qt override
-        return len(self._headers)
-
-    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
-        return None
-
-    def headerData(  # noqa: N802 - Qt override
-        self, section, orientation, role=Qt.ItemDataRole.DisplayRole
-    ):
-        if (
-            role == Qt.ItemDataRole.DisplayRole
-            and orientation == Qt.Orientation.Horizontal
-        ):
-            return self._headers[section]
-        return None
 
 
 class MainWindow(QMainWindow):
@@ -131,11 +114,21 @@ class MainWindow(QMainWindow):
 
     #: Emitted when the board-count spin box settles on a new value.
     board_count_changed = Signal(int)
+    #: Emitted with the selected references whenever the selection changes.
+    selection_changed = Signal(list)
+    #: Emitted as ``(entry id, references)`` when a row-menu entry is chosen.
+    row_menu_triggered = Signal(str, list)
 
-    def __init__(self, board: Board, settings=None, parent=None) -> None:
+    def __init__(self, board: Board, settings=None, parts=None, parent=None) -> None:
         super().__init__(parent)
         self.board = board
         self.settings = settings
+        #: The board/database/rows reconciler (``lcsc_suite.parts.PartList``).
+        #: Optional so a probe or a test can build the window on its own.
+        self.parts = parts
+        # Latch: growing a selection to the alike parts fires selectionChanged
+        # again, and without this the handler recurses.
+        self._selecting_alike = False
         self.setObjectName("lcsc-suite-main")
 
         info = board.info()
@@ -151,6 +144,10 @@ class MainWindow(QMainWindow):
 
         self.log_pane.install()
         log.info("Board %s — %d footprints", info.name, len(board.footprints()))
+        self.part_model.set_standard_trigger_highlighting_enabled(
+            bool(self._setting("general", "highlight_standard_parts", True))
+        )
+        self.reload_parts(keep_selection=False)
         self.set_part_buttons_enabled(False)
         # The table, not the spin box, so the window does not open with a text
         # cursor blinking in the board count.
@@ -342,7 +339,7 @@ class MainWindow(QMainWindow):
         return label
 
     def _build_table(self, parent: QWidget) -> QTableView:
-        """Build the part list. The model arrives in Phase 2."""
+        """Build the part list, its model and its sort proxy."""
         table = QTableView(parent)
         table.setObjectName("part-table")
         table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
@@ -363,10 +360,22 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
 
         self.part_table = table
-        # Phase 1 has no data yet, but a table with no header says nothing about
-        # whether the nine columns of §5.1 are right. Phase 2 replaces this with
-        # the real model over store.py.
-        self.set_model(_HeaderOnlyModel([name for name, _ in COLUMNS]))
+
+        self.part_model = PartTableModel(parent=self)
+        # Sorting happens in a proxy over the model, not in SQL the way
+        # store.set_order_by does it. Two reasons: a header click cannot then
+        # disagree with what the database returned, and SORT_ROLE lets "JLC
+        # Stock" sort numerically with an unknown below a confirmed zero — which
+        # a string sort puts between "0" and "1".
+        self.part_proxy = QSortFilterProxyModel(self)
+        self.part_proxy.setSourceModel(self.part_model)
+        self.part_proxy.setSortRole(SORT_ROLE)
+        self.part_proxy.setSortCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.set_model(self.part_proxy)
+
+        table.selectionModel().selectionChanged.connect(self._on_selection_changed)
+        table.customContextMenuRequested.connect(self._on_context_menu)
+        table.doubleClicked.connect(lambda _: self.assign_action.trigger())
         return table
 
     def set_model(self, model) -> None:
@@ -375,6 +384,83 @@ class MainWindow(QMainWindow):
         for index, (_, width) in enumerate(COLUMNS):
             if index < model.columnCount():
                 self.part_table.setColumnWidth(index, width)
+        self.part_table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+
+    # -- selection and the row menu ----------------------------------------
+
+    def selected_references(self) -> list[str]:
+        """Return the references of the selected rows, in view order."""
+        model = self.part_table.model()
+        return [
+            model.data(model.index(index.row(), 0), REFERENCE_ROLE)
+            for index in self.part_table.selectionModel().selectedRows()
+        ]
+
+    def select_references(self, references) -> None:
+        """Select exactly ``references``, leaving the view scrolled to the first."""
+        model = self.part_table.model()
+        wanted = set(references)
+        selection = QItemSelection()
+        for row in range(model.rowCount()):
+            if model.data(model.index(row, 0), REFERENCE_ROLE) in wanted:
+                selection.select(
+                    model.index(row, 0), model.index(row, model.columnCount() - 1)
+                )
+        self.part_table.selectionModel().select(
+            selection,
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+
+    def _on_selection_changed(self, *_) -> None:
+        """Enable the per-part actions, and pull in alike parts if asked to."""
+        references = self.selected_references()
+        self.set_part_buttons_enabled(bool(references))
+        if (
+            len(references) == 1
+            and self.select_alike_action.isChecked()
+            and not self._selecting_alike
+        ):
+            self._extend_to_alike(references[0])
+        self.selection_changed.emit(self.selected_references())
+
+    def _extend_to_alike(self, reference: str) -> None:
+        """Grow a single-row selection to every part with the same value+footprint.
+
+        Guarded by a latch: selecting those rows fires selectionChanged again,
+        and without it the handler would recurse.
+        """
+        if self.parts is None:
+            return
+        alike = self.parts.alike(reference)
+        if len(alike) <= 1:
+            return
+        self._selecting_alike = True
+        try:
+            self.select_references(alike)
+        finally:
+            self._selecting_alike = False
+
+    def _on_context_menu(self, position) -> None:
+        """Show §5.1's row menu and report which entry was chosen.
+
+        The window builds the menu; a controller decides what the entries *do*.
+        Each entry carries a stable id in its data rather than being matched on
+        its label, so the wording can change without breaking the dispatch.
+        """
+        references = self.selected_references()
+        if not references:
+            return
+        menu = QMenu(self)
+        for entry_id, label in ROW_MENU:
+            if entry_id is None:
+                menu.addSeparator()
+                continue
+            action = menu.addAction(label)
+            action.setData(entry_id)
+        chosen = menu.exec(self.part_table.viewport().mapToGlobal(position))
+        if chosen is not None:
+            self.row_menu_triggered.emit(chosen.data(), references)
 
     def _build_part_toolbar(self, parent: QWidget) -> QToolBar:
         """Build the right-hand vertical toolbar of per-part actions."""
@@ -464,6 +550,21 @@ class MainWindow(QMainWindow):
 
         bar.setFixedWidth(PART_TOOLBAR_WIDTH)
         self.part_toolbar = bar
+
+        self.select_alike_action.toggled.connect(
+            lambda checked: self._store_setting("general", "select_alike_auto", checked)
+        )
+        self.toggle_bom_pos_action.triggered.connect(
+            lambda: self._toggle_exclusions(bom=True, pos=True)
+        )
+        self.toggle_bom_action.triggered.connect(
+            lambda: self._toggle_exclusions(bom=True)
+        )
+        self.toggle_pos_action.triggered.connect(
+            lambda: self._toggle_exclusions(pos=True)
+        )
+        self.hide_bom_action.toggled.connect(self._on_hide_bom_toggled)
+        self.hide_pos_action.toggled.connect(self._on_hide_pos_toggled)
         return bar
 
     def _build_shortcuts(self) -> None:
@@ -532,6 +633,59 @@ class MainWindow(QMainWindow):
         self.progress.setValue(max(0, min(100, int(value))))
 
     # -- handlers -----------------------------------------------------------
+
+    def reload_parts(self, keep_selection: bool = True) -> None:
+        """Rebuild the part list from the board and the project database."""
+        if self.parts is None:
+            return
+        selected = self.selected_references() if keep_selection else []
+        self.parts.refresh_from_board()
+        self.part_model.set_rows(self.parts.rows())
+        if selected:
+            self.select_references(selected)
+        assigned = sum(1 for row in self.part_model.rows() if row.assigned)
+        log.info("%d parts, %d assigned", self.part_model.rowCount(), assigned)
+
+    def _toggle_exclusions(self, bom: bool = False, pos: bool = False) -> None:
+        """Flip BOM and/or POS exclusion on the selected rows.
+
+        The write goes to the board first and only then to the project database:
+        the bridge verifies by re-reading, so a write that did not land raises
+        before the database has been told it did. A database that disagrees with
+        the board is how a BOM comes out wrong.
+        """
+        references = self.selected_references()
+        if not references or self.parts is None:
+            return
+        try:
+            self.parts.toggle_exclusions(references, bom=bom, pos=pos)
+        except Exception:  # noqa: BLE001 - report it, do not take the window down
+            log.exception("Could not change the BOM/POS exclusions")
+            QMessageBox.critical(
+                self,
+                "LCSC Suite",
+                "KiCad did not accept the change to the BOM/POS attributes. "
+                "The board has been left as it was; see the log for details.",
+            )
+        self.reload_parts()
+
+    def _on_hide_bom_toggled(self, checked: bool) -> None:
+        """Show or hide the parts excluded from the BOM."""
+        self.hide_bom_action.setText(
+            "Show excluded BOM" if checked else "Hide excluded BOM"
+        )
+        if self.parts is not None:
+            self.parts.hide_excluded_bom = checked
+        self.reload_parts()
+
+    def _on_hide_pos_toggled(self, checked: bool) -> None:
+        """Show or hide the parts excluded from the position files."""
+        self.hide_pos_action.setText(
+            "Show excluded POS" if checked else "Hide excluded POS"
+        )
+        if self.parts is not None:
+            self.parts.hide_excluded_pos = checked
+        self.reload_parts()
 
     def _on_board_count_changed(self, value: int) -> None:
         """Persist and republish the board count."""

@@ -669,35 +669,143 @@ Known limitation: `restoreGeometry` clamps to the screen, and the offscreen
 platform's virtual screen is 800x800, so the geometry test asserts height only.
 `resize` does not clamp, which is why screenshots still come out at 1300x772.
 
-### Resume here → Phase 2
+### Phase 2 — Part table 🟡 mostly done
 
-Everything below is untouched. Next actions, in order:
+The table is real: nine columns over `store.py`, row colouring, sorting,
+multi-select, the row context menu, and the BOM/POS toggles. The `Store` adapter
+question that Phase 1's note flagged is settled.
 
-1. `lcsc_suite/ui/models/part_table.py` — a `QAbstractTableModel` over
-   `store.py`, replacing `main_window._HeaderOnlyModel` (Phase 1 scaffolding;
-   `MainWindow.set_model()` is the seam). Nine columns as in
-   `main_window.COLUMNS`; row colouring from `ui/theme.unassigned_colour()` and
-   `standard_trigger_colour()`; `?` for unknown stock and `0` for a confirmed
-   zero, never one rendered as the other.
-2. Wire `Store` up: it wants a `parent` with a `.settings` mapping and a
-   `board` exposing `GetFootprints()`-style pcbnew methods. The Qt app has
-   `FootprintView` snapshots instead, so `Store` needs a small adapter —
-   probably a `kicad_bridge`-backed shim implementing just
-   `footprint_helpers.get_valid_footprints` and friends. That adapter is the one
-   real design decision left in Phase 2.
-3. Selection → `set_part_buttons_enabled`, the row context menu (§5.1: Copy
-   LCSC · Paste LCSC · corrections by reference/package/name · Find mapping ·
-   Add mapping), sorting, and the BOM/POS toggles through
-   `board.set_exclude_from_bom` / `set_exclude_from_pos` — which already
-   read-back, so nothing new is needed for trap 2.
-4. Re-render `mainwindow.png` with rows in it and commit the PNG.
+Landed:
 
-Useful facts for whoever picks this up:
+- **`lcsc_suite/ui/models/part_table.py`** — `PartTableModel`. Column indices are
+  named constants (`REF`, `STOCK`, …). `PartRow` is the displayed shape, distinct
+  from the store's persisted dict. Two custom roles: `SORT_ROLE` (so JLC Stock
+  sorts numerically, with an unknown at `-1` so it lands *below* a confirmed
+  zero) and `REFERENCE_ROLE` (find a row from a selection without caring which
+  column was clicked). `?` for "nobody answered", `0` for "a source said none",
+  and **blank** for a part with no LCSC number at all — a `?` there reads as a
+  failed lookup when there is nothing to look up.
+- **`lcsc_suite/parts.py`** — `PartList`, the board↔database↔rows reconciler
+  (the wx plugin does this inside `mainwindow.populate_footprint_list`).
+  `_StoreOwner` adapts our `Settings` to the `parent.settings` mapping that
+  `store.py` and `library.py` reach into.
+- **`store.py` gained a toolkit-free seam.** Rather than making `FootprintView`
+  quack like a pcbnew footprint, `update_from_board()` is now a thin adapter that
+  builds plain part records and calls the new **`update_from_parts(parts)`**,
+  which owns all the reconciliation rules (the `lcsc_priority` setting; "value or
+  footprint changed, so the number is no longer trustworthy"). Same split for
+  `backfill_estimator_metadata(footprint, …)` → **`backfill_part_metadata(part,
+  …)`**, and `clean_database(references=None)`. `Store(parent, path, board=None)`
+  skips the board read, which is what the Qt app passes.
+  `common/test_store_pad_filter.py` still calls the pcbnew-facing spellings, and
+  they still work.
+- **Sorting is a `QSortFilterProxyModel`**, not `store.set_order_by`'s SQL, so a
+  header click cannot disagree with what the database returned.
+- **`FixtureBoard.relocate(project_path)`** — the committed fixture names a path
+  that does not exist on purpose, but `store.py` really does create
+  `<project>/jlcpcb/project.db`, so the probe and the tests point it at a temp
+  directory first.
+- Screens: `mainwindow.png` plus **`mainwindow-unassigned.png`**, a second view
+  scrolled to the first part that needs a number — the default view does not
+  reach one, and the row colouring is the thing most worth looking at. In it
+  `G1`–`G3` and `JP1` are red and bold; the mounting holes are excluded from the
+  BOM and deliberately *not* marked.
+- Tests: `tests/test_qt_part_table.py` (25) covers the `?`/`0` distinction in
+  both the cell and the sort, the red-vs-amber meanings, board-before-database
+  write ordering, and a trapped board leaving the database alone.
 
-- `scripts/qt_probe.py --list` names every screen; add a `screen_*` builder and
-  an entry in `SCREENS` and CI covers it automatically.
-- The fixture board has 110 footprints, 93 assigned, 8 excluded from BOM and
-  POS, and `R12` marked DNP — enough for every column state to appear at once.
-- `lcsc_suite/shared.py` is the only sanctioned way to import the repo-root
-  logic modules. Do not add `sys.path` hacks elsewhere.
+**Still open in Phase 2** — pick these up first:
+
+1. **The context menu is wired but inert.** `MainWindow._on_context_menu` emits
+   `row_menu_triggered(entry_id, references)` for the ids in
+   `main_window.ROW_MENU`; nothing is connected to it yet. Copy/Paste LCSC are
+   Phase 3 work (they need the assignment path); the three "Add correction …"
+   entries and the two mapping entries need Phase 5's dialogs. Deciding *where*
+   the dispatch lives is the open design question — probably a controller object
+   that owns `PartList`, the window and the dialogs, rather than the window
+   growing handlers.
+2. **`Library` is never constructed**, so `PartList._details()` returns `{}` and
+   the Type / LCSC Params columns are empty, and JLC Stock reads `?` for every
+   assigned part. `Library(parent)` wants the same `parent.settings` shape
+   `_StoreOwner` already provides, and now posts progress through
+   `events.post()`, so it needs a `post_event` attribute on that parent to
+   report a DB download. Wire it up and those three columns fill from the local
+   cache. **Do not let it touch the network** — that is Phase 4's job.
+3. **`highlight_standard_parts` is read but nothing sets the trigger refs.**
+   `PartTableModel.set_standard_trigger_refs()` is called by nobody until the BOM
+   estimator lands (Phase 5), so the amber advisory is currently unreachable.
+   Tested directly; not reachable through the UI.
+4. **Match highlighting.** `PartRow.match_terms` exists and is unused. §5.1's
+   "Highlight search matches" is a `QStyledItemDelegate` on the LCSC Params
+   column — the port of `dataview_highlight.HighlightedTextRenderer`. Note that
+   Qt has none of the wx problems that file works around (a renderer painting
+   into the wrong width, a column width discarded before the window is shown), so
+   it should be much smaller.
+5. **Live IPC verification is still deferred.** Everything is proven against
+   `FixtureBoard`. KiCad quit during the Phase 0 session and has not been
+   reopened, so no write has yet gone over a real socket. Do this in Phase 3
+   against a **copy** of a board in the scratchpad, never the user's own.
+
+### Resume here → Phase 3 and the rest
+
+Read this whole §10, then `git log --oneline` for the three phase commits. Every
+screen in `docs/screens/` is current as of the Phase 2 commit.
+
+Phase 3 (assignment path) is the next phase proper: `Assign LCSC number`,
+`Remove LCSC number`, `Auto-select alike`, `Save mappings`. The bridge work is
+already done — `board.set_lcsc({ref: number})` creates the field if the footprint
+has none (trap 3), verifies by re-reading and raises `WriteVerificationError`
+otherwise, so **no new trap-2 handling is needed**; wire the buttons to it and
+mirror into `store.set_lcsc`. `Auto-select alike` already works as a *selection*
+mode (`PartList.alike()`, latched against recursion in
+`MainWindow._extend_to_alike`); what Phase 3 adds is assigning to that selection
+in one go. `Save mappings` needs `Library`'s mapping table, so it depends on open
+item 2 above.
+
+House rules that have been followed so far and should keep being followed:
+
+- **Never claim a UI change works without looking at the PNG.**
+  `.venv/bin/python scripts/qt_probe.py --all --theme both` and then actually
+  read the images. `--geometry` is a supplement, never a substitute. Commit the
+  PNGs in the same commit as the UI change.
+- `scripts/qt_probe.py --list` names every screen; add a `screen_*` builder plus
+  an entry in `SCREENS` and CI covers it automatically. Give each screen fresh
+  `probe_settings()` — the main window saves its geometry on close and the next
+  screen would restore it.
+- `lcsc_suite/shared.py` is the only sanctioned way to import the repo-root logic
+  modules. Do not add `sys.path` hacks anywhere else.
+- `lcsc/api.py` is **copied, not edited**. If a UI need seems to require an API
+  change, change the UI.
+- The fixture board (`lcsc_suite/fixtures/board.json`, derived from the real
+  temperature-controller PCB) has 110 footprints, 93 assigned, 8 excluded from
+  both BOM and POS, and `R12` marked DNP — enough for every column state to
+  appear at once. `FixtureBoard(honour_footprint_writes=False)` reproduces trap 2
+  exactly and is how the read-back assertions are proved.
+- Run `.venv/bin/python -m pytest -q` at every phase boundary. It was 436 tests
+  at the start of the migration and is 512 now; nothing in it imports wx, so it
+  must stay green throughout.
+- `ruff check --extend-exclude=lib` must pass. `ruff format --check` still
+  reports four **untouched upstream** files (`corrections.py`, `events.py`,
+  `kicad_drc.py`, `partdetails.py`) — leave them alone, as CLAUDE.md says.
+- The legacy wx plugin stays installed and working until Phase 8.
+  `./install.sh --list` shows both halves.
+
+Environment notes worth knowing:
+
+- `./install.sh --app` has been run; the IPC plugin is symlinked at
+  `~/Documents/KiCad/10.0/plugins/lcsc_suite` → `kicad_plugin/`, and the venv is
+  `.venv` (Python 3.14.5, PySide6 6.11.1, kicad-python). The spike plugin has
+  been deleted as §9 asked.
+- KiCad's API server is enabled. The launcher was verified end to end with a
+  deliberately poisoned `PYTHONHOME`, and its log goes to
+  `~/.local/state/lcsc-suite/plugin.log` — the only place a start-up traceback
+  can be read, because KiCad discards both streams.
+- Settings live at
+  `~/Library/Preferences/kicad-lcsc-suite/LCSC Suite/settings.json` and were
+  imported once from the wx plugin's file.
+- The offscreen platform's virtual screen is **800x800**. `resize()` ignores it
+  (so screenshots are 1300x772) but `restoreGeometry()` clamps to it, which is
+  why the geometry test asserts height only.
+- No Windows machine is available here, so §7's "one real Windows pass per phase"
+  has not been done for any phase. Flagged, not silently skipped.
 

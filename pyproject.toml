@@ -173,6 +173,9 @@ split-on-trailing-comma = false
 # is what CI and the tests use), so `import kipy` is deferred to the call that
 # needs it. Protocol declarations carry their contract in the class docstring.
 "lcsc_suite/kicad_bridge.py" = ["D102", "D105", "PLC0415"]
+# QAbstractTableModel's overrides (rowCount, data, headerData, …) are documented
+# by Qt; repeating "Return the number of rows" nine times is noise.
+"lcsc_suite/ui/models/part_table.py" = ["D102"]
 # PySide6 and the legacy-package alias are both imported late on purpose: the
 # first so a --fixture run needs no KiCad, the second to avoid a cycle.
 "lcsc_suite/__main__.py" = ["PLC0415"]
