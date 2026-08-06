@@ -1,0 +1,112 @@
+# Render every LCSC Suite screen offscreen and fail if any of them raises.
+#
+# This is the migration's safety net. Qt renders with no display, no window
+# manager and no screen-recording permission, so the same command a developer
+# runs locally works unchanged here — and because the style is forced to Fusion
+# with explicit font sizes, a screen that renders on Linux renders the same on
+# macOS and Windows.
+#
+# The job does two things a unit test cannot:
+#
+#   1. builds every screen, so a layout change that throws (a missing attribute,
+#      a model that returns the wrong column count) fails loudly instead of
+#      waiting for someone to open that dialog;
+#   2. checks the committed PNGs are up to date, so a UI change cannot land
+#      without its screenshot. That is the rule the whole migration rests on.
+name: Qt screens
+
+on:
+  push:
+    paths:
+      - "lcsc_suite/**"
+      - "scripts/qt_probe.py"
+      - "docs/screens/**"
+      - ".github/workflows/qt-screens.yml"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the app's dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "PySide6>=6.7,<7" "kicad-python>=0.4,<1" pytest
+
+      - name: Install the libraries Qt's offscreen platform still needs
+        # Even offscreen, Qt links against xkbcommon and a handful of X client
+        # libraries. Without these the platform plugin fails to load and every
+        # screen "raises" for a reason that has nothing to do with our code.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0 libdbus-1-3
+
+      - name: Render every screen, light and dark
+        run: python scripts/qt_probe.py --all --theme both --out /tmp/screens
+
+      - name: Check the committed screenshots are up to date
+        # A UI change that alters a screen must update its PNG in the same
+        # commit, so the diff shows the visual change. Compare structurally
+        # rather than byte-for-byte: font rasterisation differs between the
+        # runner and a developer's machine, which would make this a permanent
+        # false failure.
+        run: |
+          python - <<'PY'
+          import os, sys
+          committed, rendered = "docs/screens", "/tmp/screens"
+          missing, wrong_size = [], []
+          for name in sorted(os.listdir(rendered)):
+              target = os.path.join(committed, name)
+              if not os.path.isfile(target):
+                  missing.append(name)
+                  continue
+              from PySide6.QtGui import QImage
+              a, b = QImage(target), QImage(os.path.join(rendered, name))
+              if a.size() != b.size():
+                  wrong_size.append(f"{name}: committed {a.size()}, rendered {b.size()}")
+          if missing:
+              print("Screens with no committed PNG — run scripts/qt_probe.py and commit:")
+              for name in missing:
+                  print(f"  docs/screens/{name}")
+          if wrong_size:
+              print("Screens whose committed PNG is a different size:")
+              for line in wrong_size:
+                  print(f"  {line}")
+          sys.exit(1 if missing or wrong_size else 0)
+          PY
+
+      - name: Upload the rendered screens
+        # Always, so a failing run can be looked at rather than guessed at.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qt-screens
+          path: /tmp/screens
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest ruff==0.14.14 "PySide6>=6.7,<7" requests
+      - name: pytest
+        # Nothing under tests/ imports wx, so the whole suite runs on a bare
+        # Python — it is the safety net for the logic half through every phase.
+        run: python -m pytest -q
+      - name: ruff
+        run: |
+          ruff check --extend-exclude=lib

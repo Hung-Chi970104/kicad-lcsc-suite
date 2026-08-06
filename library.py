@@ -12,7 +12,6 @@ import time
 from typing import NamedTuple, Optional
 
 import requests  # pylint: disable=import-error
-import wx  # pylint: disable=import-error
 
 from .dblib import DEFAULT_LIBRARY, LIBRARY_CONFIGS
 from .events import (
@@ -20,9 +19,15 @@ from .events import (
     DownloadProgressEvent,
     DownloadStartedEvent,
     MessageEvent,
+    post,
 )
-from .helpers import PLUGIN_PATH, dict_factory
+from .sqlite_helpers import dict_factory
 from .unzip_parts import unzip_parts
+
+#: Plugin root. Duplicated from ``helpers.PLUGIN_PATH`` rather than imported:
+#: ``helpers`` pulls in wx, and this module has to be importable from the Qt
+#: app's interpreter, which has none. Both resolve to this directory.
+PLUGIN_PATH = Path(__file__).resolve().parent
 
 
 class PartsDatabaseInfo(NamedTuple):
@@ -553,7 +558,7 @@ class Library:
             self.download()
         except Exception as exc:  # pylint: disable=broad-exception-caught
             self.logger.exception("Unexpected error while downloading parts database")
-            wx.PostEvent(
+            post(
                 self.parent,
                 MessageEvent(
                     title="Download Error",
@@ -568,7 +573,7 @@ class Library:
     def download(self):
         """Actual worker thread that downloads and imports the parts data."""
         start = time.time()
-        wx.PostEvent(self.parent, DownloadStartedEvent())
+        post(self.parent, DownloadStartedEvent())
 
         # Get library configuration for selected library
         library_config = LIBRARY_CONFIGS[self.selected_library]
@@ -599,7 +604,7 @@ class Library:
                 url_stub + cnt_file, allow_redirects=True, stream=True, timeout=300
             )
             if r.status_code != requests.codes.ok:
-                wx.PostEvent(
+                post(
                     self.parent,
                     MessageEvent(
                         title="HTTP GET Error",
@@ -614,7 +619,7 @@ class Library:
 
             total_chunks = int(r.text)
         except Exception as e:
-            wx.PostEvent(
+            post(
                 self.parent,
                 MessageEvent(
                     title="Download Error",
@@ -674,7 +679,7 @@ class Library:
                         timeout=300,
                     )
                     if r.status_code != requests.codes.ok:
-                        wx.PostEvent(
+                        post(
                             self.parent,
                             MessageEvent(
                                 title="Download Error",
@@ -697,7 +702,7 @@ class Library:
                     for data in r.iter_content(chunk_size=4096):
                         f.write(data)
                         progress = f.tell() / size * 100
-                        wx.PostEvent(self.parent, DownloadProgressEvent(value=progress))
+                        post(self.parent, DownloadProgressEvent(value=progress))
                     self.logger.debug("Chunk %d downloaded successfully.", chunk_index)
 
                 # Update progress file after successful download
@@ -705,7 +710,7 @@ class Library:
                     f.write(f"{chunk_index}\n")
 
             except Exception as e:
-                wx.PostEvent(
+                post(
                     self.parent,
                     MessageEvent(
                         title="Download Error",
@@ -725,7 +730,7 @@ class Library:
         try:
             unzip_parts(self.parent, self.datadir, library_config.name + ".zip")
         except Exception as e:
-            wx.PostEvent(
+            post(
                 self.parent,
                 MessageEvent(
                     title="Extract Error",
@@ -738,7 +743,7 @@ class Library:
 
         # Check if the database file was successfully extracted
         if not os.path.exists(self.partsdb_file):
-            wx.PostEvent(
+            post(
                 self.parent,
                 MessageEvent(
                     title="Download Error",
@@ -749,9 +754,9 @@ class Library:
             self.state = LibraryState.INITIALIZED
             return
 
-        wx.PostEvent(self.parent, DownloadCompletedEvent())
+        post(self.parent, DownloadCompletedEvent())
         end = time.time()
-        wx.PostEvent(
+        post(
             self.parent,
             MessageEvent(
                 title="Success",

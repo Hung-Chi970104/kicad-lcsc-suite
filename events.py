@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover - test environments may not have wx
 
         return _DummyEvent, object()
 
+
 DownloadStartedEvent, EVT_DOWNLOAD_STARTED_EVENT = NewEvent()
 DownloadProgressEvent, EVT_DOWNLOAD_PROGRESS_EVENT = NewEvent()
 DownloadCompletedEvent, EVT_DOWNLOAD_COMPLETED_EVENT = NewEvent()
@@ -35,3 +36,28 @@ AssemblyEnrichmentCompletedEvent, EVT_ASSEMBLY_ENRICHMENT_COMPLETED_EVENT = NewE
 PartDetailsProgressEvent, EVT_PART_DETAILS_PROGRESS_EVENT = NewEvent()
 PartDetailsCompletedEvent, EVT_PART_DETAILS_COMPLETED_EVENT = NewEvent()
 BomDataChangedEvent, EVT_BOM_DATA_CHANGED_EVENT = NewEvent()
+
+
+def post(destination, event) -> None:
+    """Deliver a worker-thread event to ``destination``.
+
+    Two toolkits now consume these. The legacy plugin's destination is a
+    ``wx.Dialog`` that binds handlers and wants ``wx.PostEvent``; the
+    out-of-process Qt app has no wx in its interpreter at all and instead passes
+    a destination exposing ``post_event(event)``, which re-emits it as a Qt
+    signal on the UI thread.
+
+    Deciding between them *here* is what lets ``library.py`` and
+    ``unzip_parts.py`` — pure SQLite and zip handling either way — stay free of
+    both toolkits. Callers just say what happened.
+    """
+    sink = getattr(destination, "post_event", None)
+    if callable(sink):
+        sink(event)
+        return
+
+    try:
+        import wx  # pylint: disable=import-error,import-outside-toplevel
+    except ImportError:  # pragma: no cover - neither toolkit present
+        return
+    wx.PostEvent(destination, event)

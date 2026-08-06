@@ -25,6 +25,8 @@ ENV/
 jlcpcb/
 corrections/
 dev/
+# The wx plugin writes this into the checkout. The Qt app keeps its own copy in
+# the per-user config directory (lcsc_suite/config.py) and imports this one once.
 /settings.json
 
 # Lib-table backups this plugin writes before editing a KiCad table

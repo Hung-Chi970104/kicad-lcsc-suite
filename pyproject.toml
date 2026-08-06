@@ -165,6 +165,20 @@ split-on-trailing-comma = false
 "selfcheck.py" = ["T201"]
 # Same: a CLI dev tool whose output is the report it prints.
 "scripts/gui_probe.py" = ["T201"]
+# The Qt migration's acceptance tool. Same deal — its report *is* its output —
+# plus it must set QT_QPA_PLATFORM before importing Qt, so its imports cannot
+# all live at the top of the file.
+"scripts/qt_probe.py" = ["T201", "E402", "PLC0415"]
+# Board access has to work with or without kipy installed (the fixture backend
+# is what CI and the tests use), so `import kipy` is deferred to the call that
+# needs it. Protocol declarations carry their contract in the class docstring.
+"lcsc_suite/kicad_bridge.py" = ["D102", "D105", "PLC0415"]
+# PySide6 and the legacy-package alias are both imported late on purpose: the
+# first so a --fixture run needs no KiCad, the second to avoid a cycle.
+"lcsc_suite/__main__.py" = ["PLC0415"]
+"lcsc_suite/config.py" = ["PLC0415"]
+# The wx import is the fallback branch of a toolkit-agnostic dispatcher.
+"events.py" = ["PLC0415"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 25

@@ -5,14 +5,13 @@ import logging
 import os
 from zipfile import ZipFile
 
-import wx  # pylint: disable=import-error
-
 from .events import (
     UnzipCombiningProgressEvent,
     UnzipCombiningStartedEvent,
     UnzipExtractingCompletedEvent,
     UnzipExtractingProgressEvent,
     UnzipExtractingStartedEvent,
+    post,
 )
 
 
@@ -20,7 +19,7 @@ def unzip_parts(parent, path, zipfile: str) -> None:
     """Unzip and merge split zip file."""
     logger = logging.getLogger(__name__)
     logger.debug("Combine zip chunks")
-    wx.PostEvent(parent, UnzipCombiningStartedEvent())
+    post(parent, UnzipCombiningStartedEvent())
     # unzip (needs to go into download function finally)
     # Set the name of the original file
     db_zip_file = os.path.join(path, zipfile)
@@ -46,11 +45,11 @@ def unzip_parts(parent, path, zipfile: str) -> None:
             # Delete the split file
             os.unlink(split_path)
             progress = 100 / len(split_files) * i
-            wx.PostEvent(parent, UnzipCombiningProgressEvent(value=progress))
+            post(parent, UnzipCombiningProgressEvent(value=progress))
 
     with ZipFile(db_zip_file, "r") as zf:
         logger.debug("Extract zip file")
-        wx.PostEvent(parent, UnzipExtractingStartedEvent())
+        post(parent, UnzipExtractingStartedEvent())
         file_info = zf.infolist()[0]
         file_size = file_info.file_size
         with (
@@ -60,7 +59,7 @@ def unzip_parts(parent, path, zipfile: str) -> None:
             for chunk in iter(lambda: source.read(1024 * 1024), b""):
                 target.write(chunk)
                 progress = target.tell() / file_size * 100
-                wx.PostEvent(parent, UnzipExtractingProgressEvent(value=progress))
+                post(parent, UnzipExtractingProgressEvent(value=progress))
 
     os.unlink(db_zip_file)
-    wx.PostEvent(parent, UnzipExtractingCompletedEvent())
+    post(parent, UnzipExtractingCompletedEvent())
