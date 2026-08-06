@@ -634,3 +634,70 @@ Deviations and deferrals, with reasons:
   Windows machine is available in this environment; the CI job renders on Linux,
   which exercises the same Fusion path. Flagged, not silently skipped.
 
+### Phase 1 — Main window shell ✅
+
+Both toolbars, the board-count row, the status line, the log pane, the
+single-instance lock and window-geometry persistence. The part table is present
+with its nine column headers and no rows.
+
+- `ui/main_window.py` — the §5.1 layout. `ui/icons.py` reuses the existing
+  `icons/` set, recolouring the black line art for dark mode.
+  `ui/log_pane.py` marshals log records onto the UI thread through a queued Qt
+  signal (the replacement for `wx.CallAfter`).
+- `single_instance.py` — a `QLocalServer` whose *binding* is the lock and which
+  doubles as the "come forward" channel. Scoped **per board**: KiCad reruns the
+  launcher on every toolbar click, so there is no window to look for, and two
+  windows on one board would share a project database.
+- Screens: `mainwindow.png`, `mainwindow-dark.png`.
+
+Deliberate departures from the wx layout, all visible in the screenshot:
+
+- **The right-hand toolbar is 152px, not 128px.** At 128 the wx original elides
+  "Assign LCSC number" to "Assign … number". 24px of table width buys ten
+  readable labels.
+- **All ten per-part buttons fit.** §5.1 records that the wx toolbar is "long
+  enough that a button at its end is scrolled out of sight"; Qt does the same
+  thing with an extension arrow, which quietly loses `Save mappings`. Tightened
+  button padding plus a 128px log pane (down from wx's 150) makes all ten
+  reachable, and `test_every_part_button_fits_without_an_extension_arrow` keeps
+  it that way.
+- **The table and log are in a splitter.** Same default proportions, draggable.
+- The label is `Toggle BOM & POS`, as the running plugin has it; §5.1 writes it
+  without the ampersand.
+
+Known limitation: `restoreGeometry` clamps to the screen, and the offscreen
+platform's virtual screen is 800x800, so the geometry test asserts height only.
+`resize` does not clamp, which is why screenshots still come out at 1300x772.
+
+### Resume here → Phase 2
+
+Everything below is untouched. Next actions, in order:
+
+1. `lcsc_suite/ui/models/part_table.py` — a `QAbstractTableModel` over
+   `store.py`, replacing `main_window._HeaderOnlyModel` (Phase 1 scaffolding;
+   `MainWindow.set_model()` is the seam). Nine columns as in
+   `main_window.COLUMNS`; row colouring from `ui/theme.unassigned_colour()` and
+   `standard_trigger_colour()`; `?` for unknown stock and `0` for a confirmed
+   zero, never one rendered as the other.
+2. Wire `Store` up: it wants a `parent` with a `.settings` mapping and a
+   `board` exposing `GetFootprints()`-style pcbnew methods. The Qt app has
+   `FootprintView` snapshots instead, so `Store` needs a small adapter —
+   probably a `kicad_bridge`-backed shim implementing just
+   `footprint_helpers.get_valid_footprints` and friends. That adapter is the one
+   real design decision left in Phase 2.
+3. Selection → `set_part_buttons_enabled`, the row context menu (§5.1: Copy
+   LCSC · Paste LCSC · corrections by reference/package/name · Find mapping ·
+   Add mapping), sorting, and the BOM/POS toggles through
+   `board.set_exclude_from_bom` / `set_exclude_from_pos` — which already
+   read-back, so nothing new is needed for trap 2.
+4. Re-render `mainwindow.png` with rows in it and commit the PNG.
+
+Useful facts for whoever picks this up:
+
+- `scripts/qt_probe.py --list` names every screen; add a `screen_*` builder and
+  an entry in `SCREENS` and CI covers it automatically.
+- The fixture board has 110 footprints, 93 assigned, 8 excluded from BOM and
+  POS, and `R12` marked DNP — enough for every column state to appear at once.
+- `lcsc_suite/shared.py` is the only sanctioned way to import the repo-root
+  logic modules. Do not add `sys.path` hacks elsewhere.
+
