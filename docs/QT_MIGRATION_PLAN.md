@@ -1081,138 +1081,262 @@ Tests: `tests/test_qt_undo.py` (28). 595 → 623 overall. Screens re-rendered:
 `mainwindow.png` shows the button greyed with nothing to reverse,
 `mainwindow-assigned.png` shows it live.
 
-### Resume here → Phase 4
+### Phase 4 — LCSC Explorer ✅
+
+The biggest single piece. Counting the four wx modules it replaces
+(`explorer.py`, `photoviewer.py`, `previewpanel.py`, `facetfilter.py`): **3601
+lines / 2285 of actual code → 3033 lines / 1940 of code**, spread across eight
+files instead of four. A 15% reduction, which is smaller than it feels while
+writing it — the workarounds listed below did go, and the prose explaining *why*
+they went took their place. The win is not the line count; it is that none of the
+deleted code had anything to do with LCSC parts.
+
+`lcsc/explorer.py` → **`lcsc_suite/ui/explorer/`**:
+
+| Module | What it owns |
+|---|---|
+| `window.py` | the dialog: search, filters, the two fills, the action bar |
+| `results.py` | the grid's model, its four delegates and the column fitting |
+| `facets.py` | the parametric filter panel and the tick debounce |
+| `detail.py` | the selected part's pane, both stock cards, both layouts |
+| `preview.py` | the symbol / footprint / photo tiles (`lcsc/previewpanel.py`) |
+| `tasks.py` | `QThreadPool` pools, the staleness tokens, the fill caps |
+
+Plus **`lcsc_suite/ui/photo_viewer.py`** (`lcsc/photoviewer.py`) and
+**`lcsc_suite/search_source.py`**, which is new and is described below.
+`lcsc/facetfilter.py`'s `ComboCtrl`+`CheckListBox` popup became a `QToolButton`
+with a checkable `QMenu`.
+
+Screens: `explorer`, `explorer-detail`, `explorer-inline`, `explorer-retail`,
+`explorer-facets`, `photo-viewer`, each in both appearances.
+Tests: `tests/test_qt_explorer.py` (48). 623 → 671 overall.
+
+#### The search fixture, and what it is really for
+
+`lcsc_suite/fixtures/explorer/` holds one live capture, taken 2026-08-07 under
+the authorisation the pre-flight notes recorded: keyword `10nF 0402`, 100 hits of
+18,327 matches, JLC assembly detail and LCSC retail detail for **all 100** rows,
+EasyEDA product records for 6, and 93 thumbnails. Written by
+`scripts/capture_explorer_fixture.py`, which refuses to run without
+`--capture-once`, paces every request and stops after five refusals in a row.
+Every host answered; nothing had to be hand-built.
+
+**Correcting the pre-flight note:** it said `qt-screens.yml` "asserts the
+committed PNGs match what renders", and that a live grid would therefore fail the
+gate permanently. That overstates it — the job compares **presence and image
+size**, not pixels, because font rasterisation differs between the runner and a
+developer's machine. Changing stock figures would not fail it. The fixture is
+still right, for three reasons that survive the correction:
+
+- LCSC 403s whole networks and GitHub's shared runner ranges are prime
+  candidates, and `_HostBreaker` keeps a blocked run blocked for ten minutes —
+  so the screens would *raise*, which the gate does catch;
+- a screenshot whose contents change every run is not evidence a human can
+  review, which is the entire point of committing them;
+- a test asserting on live stock asserts on the figure whose disagreement
+  across sources is the thing this fork exists to *show*.
+
+**The capture is raw payloads and replays through `api.py`'s own parsers.** It
+carries no `SearchHit` objects and no post-processed shapes. That is the direct
+lesson of trap 4: a fixture is only evidence to the extent it is *less* permissive
+than the thing it stands for, and one invented from the shapes we think an
+endpoint returns is more permissive by construction. Here a change to how
+`api.py` reads a field changes what the fixture produces, because it is the same
+code reading it. Gzipped — 9 MB of raw retail payloads compress to 416 kB —
+rather than trimmed to the fields currently read, because trimming is exactly the
+post-processing the rule forbids.
+
+**Offline is structural, not a matter of timing.** `_get_json` and `fetch_image`
+both consult the cache first and the host breaker second, *before* any socket. So
+`FixtureSource` primes a never-expiring cache with the captured payloads and
+installs a breaker that reports every host tripped open: a captured URL is served,
+an uncaptured one takes the module's own "nobody answered" branch. No edit to
+`api.py`, which is copied and not edited.
+
+#### Three bugs the phase found, and how
+
+Worth recording individually because each was found by a different instrument.
+
+1. **The whole LCSC retail column rendered `…`, under a status line saying both
+   hosts were refusing.** *Found by looking at the screenshot.* The breaker
+   stand-in refuses everything, so `api.retail_unreachable()` — which asks the
+   breaker per host — reported both retail sources down and the Explorer skipped
+   the fill it was about to run. The breaker is still right to refuse everything;
+   it is the transport block. But "can this process open a socket" and "does this
+   source have retail data" are different questions, and only the second is what
+   the window asks. `FixtureSource.retail_unreachable()` answers it.
+
+2. **The offline guarantee had a hole, and it was in `api.jlc_search`.** *Found by
+   a test.* When the direct POST yields nothing, `jlc_search` falls back to the
+   vendored `easyeda2kicad` client — which carries its own transport and never
+   passes the host breaker. A keyword the capture does not hold went straight out
+   to the network from a source whose entire contract is that it cannot.
+   `FixtureSource.search` calls `_jlc_search_direct` by name, which uses the same
+   cache key and has no fallback. `test_the_search_never_falls_back_to_the_
+   vendored_client` pins it shut.
+
+3. **The availability card read "expand part".** *Found by looking at the
+   screenshot.* `SearchHit` maps the wire spelling to Basic/Extended;
+   `StockReport` deliberately does not, because it reports what the endpoint
+   said — and the card preferred the report. The wx original has the same bug.
+   Fixed in the UI (`detail.library_label`), not in `api.py`.
+
+#### What got smaller, and why
+
+Every item here is a wx workaround with no Qt counterpart, which is the migration's
+thesis stated in code.
+
+- **The column-width machinery: ~200 lines → one function.** `_resize_columns`
+  (67), `_measure_grid_metrics` (60), `_squeeze` (22), `_set_column_hidden` and
+  the `FLEX_WEIGHTS`/`SHRINK_ORDER`/`MIN_SHARE` tables (~40) existed because the
+  macOS DataView redistributes every width when one changes and adds per-column
+  padding it will not report — ignoring which once overflowed a header by 135px.
+  `results.fit_columns` is about twenty lines of logic: `QTableView`'s viewport
+  reports its own width honestly and a column stays where it is put. The
+  throwaway trailing `spacer` column is deleted rather than ported.
+- **`_post()` / `_alive()`: gone.** A Qt signal to a destroyed receiver is not
+  delivered and does not raise, because Qt severs the connection. The wx pair
+  existed because `wx.CallAfter` raises *on the worker thread* once the dialog is
+  gone, where nothing catches it. **The staleness tokens stayed** — auto-
+  disconnection answers "the window is gone" and says nothing about "these results
+  are for the previous search".
+- **"Inline below" is now a real row.** The wx version could not put a child
+  window inside a native DataView, so the pane was a *sibling* clipped to the
+  rectangle of reserved placeholder rows and repositioned by a 100ms timer
+  (`INLINE_TRACK_MS`, `inline_clip`, `_position_inline_detail`, `_inline_placed`)
+  because that control's scroll notifications are not dependable. Here the model
+  inserts a placeholder row, the view spans it across every column and
+  `setIndexWidget` puts the pane in it. It scrolls because it *is* a row. The
+  timer and its three helpers are deleted.
+- **Renderers are not told their own width.** `set_cell_width` on three wx
+  renderers existed because a custom renderer is handed the rect it asked for in
+  `GetSize()`, not its column's — which once wrapped "Multilayer Ceramic
+  Capacitor" inside a 100px box in a 470px column. A `QStyledItemDelegate` is
+  handed `option.rect`.
+- **The thumbnail lives in the model.** wx could not hold an invalid `wx.Bitmap`
+  in a `DataViewListCtrl`, so the cell value was the LCSC code and the renderer
+  looked artwork up through a callback. `QPixmap` has a null state.
+- **One repaint per thumbnail, not per batch.** `_thumb_refresh_scheduled` and
+  `_flush_thumb_refresh` coalesced arrivals because a DataView has no single-cell
+  invalidation. `dataChanged` on one index does.
+- **The parameter table's `EVT_SIZE` handler is gone.** Two fixed widths could not
+  serve both layouts; `ResizeToContents` plus a stretched value column can.
+
+What deliberately did **not** change: the fetch ordering, the fill caps
+(`RETAIL_FILL_LIMIT` 120 / 2 workers, `THUMB_FILL_LIMIT` 60 / 3 workers, and the
+reason two rather than five), `FILTER_DEBOUNCE_MS`, the OR-within/AND-across facet
+semantics, and the `…` / `?` / `0` distinction.
+
+#### Departures from the plan and from the wx plugin
+
+- **§5.2's Inventory selector is stale.** It lists three options; the running
+  plugin has two. "Both inventories" was removed before this migration started —
+  it meant a hundred extra per-part lookups per search, re-fired on every filter
+  change, which LCSC answers with a 403 in some regions and EasyEDA answers with
+  a ban. Two is what was ported. The *three inventories* the pre-flight note
+  worried about are the three **sources** (JLC assembly, LCSC retail, the EasyEDA
+  fallback), and those are all present.
+- **The photo falls back to JLC's file service.** The wx version tried only
+  `report.images`, which are LCSC's own CDN URLs — and LCSC 403s whole networks
+  taking that CDN with it, which is precisely why §4 says photos come from JLC.
+  `ExplorerWindow._photo_urls` appends `hit.photo_url` and `hit.thumbnail_url`
+  behind the report's own, so a blocked CDN costs sharpness rather than the
+  picture. A UI change, which is where §4 says such changes belong.
+- **The Explorer does not write.** It emits `assign_requested(number, stock)` and
+  `SuiteController.assign_number` performs it — the same funnel the dialog,
+  `Paste LCSC` and `Find mapping` already go through. Library *import* is done in
+  the window: it writes files under a folder this window owns the field for and
+  touches neither the board nor the project database.
+- **One Explorer, re-targeted.** `SuiteController.open_explorer` raises and
+  re-points an open one. Two would each hold a search, two fills and a photo
+  window, and both would write through the same controller.
+- **The photo tile's caption is "Photo (enlarge)".** At 140px the wx wording
+  elided to "to (click to enla", which advertises nothing.
+
+#### Known limitations, stated rather than skipped
+
+- **`?` does not appear in any Phase 4 screenshot.** The capture answered for
+  every row, so nothing is in the "asked, nobody answered" state — that is what
+  the data honestly is, not a fixture that flattened it. `0` *does* appear (28 of
+  100 rows have zero LCSC retail stock, visible in `explorer-retail`), and all
+  three spellings are covered directly by tests.
+- **Library import is not covered by the offline guarantee.** `LcscImporter` uses
+  the vendored `easyeda2kicad` network client, which has its own transport. The
+  probe and the tests never invoke it, so nothing currently reaches the wire —
+  but a future test that clicks Import would. Route it through `search_source` if
+  that day comes.
+- **Windows verification still not run**, for any phase. No Windows machine here.
+- **`live_ipc_check.py` was not re-run**, because `kicad_bridge` was not touched
+  in this phase. Re-run it whenever it is.
+
+### Resume here → Phase 5
 
 Read this whole §10, then `git log --oneline` for the phase commits. Every screen
-in `docs/screens/` is current, and Phases 0–3 are done.
+in `docs/screens/` is current, and Phases 0–4 are done.
 
-**Phase 4 is the LCSC Explorer** — the biggest single piece (2918 lines today).
-§6's sub-order still stands: search + results grid → thumbnails → inventory/sort/
-stock filters → parametric facets → detail pane (side and inline) → photo viewer
-→ import/assign buttons.
+**Phase 5 is the remaining dialogs**: Settings (§5.3), Corrections (§5.4),
+Mappings (§5.5), Part Details (§5.6) and the BOM estimator (§5.8). It is five
+small windows rather than one large one, and three things are waiting on it:
 
-Three things are already in place for it:
+1. **The three `Add correction …` row-menu entries.** Greyed out since Phase 3;
+   `controller.HANDLED_ROW_MENU` is what says so. They need the Corrections
+   dialog.
+2. **`PartTableModel.set_standard_trigger_refs()` is called by nobody**, so the
+   amber standard-mode advisory is unreachable through the UI. The BOM estimator
+   is what sets those references.
+3. **Nothing toggles match highlighting at runtime.** The delegate reads
+   `highlighting.matches` at build time and exposes `set_enabled()`; the checkbox
+   that would call it lives in the Settings dialog.
 
-- **The assignment target exists.** `SuiteController.assign_number(references,
-  number, stock=...)` is the funnel; the Explorer supplies `stock` because it has
-  a figure at assignment time. Do not add a second write path.
-- **`lcsc/api.py` is imported as-is** through `shared.lcsc_api`. Copied, not
-  edited — if a UI need seems to require an API change, change the UI.
-- **The threading shape is decided but unbuilt**: `QThreadPool` workers emitting
-  Qt signals, replacing `wx.CallAfter`. `ui/log_pane.py` is the one worked
-  example of marshalling onto the UI thread with a queued signal.
-
-- **The write path is proven over a real socket**, as of Phase 3. The Explorer's
-  assign buttons need no new IPC work at all — call `assign_number()`.
-- **`lcsc/api.py` needs no new dependency.** Checked on the venv's Python 3.14:
-  it imports cleanly and uses only stdlib (`urllib`, `ssl`, `threading`) — no
-  `requests`. So does `lcsc_details` and `lcsc_importer`.
-
-#### Concerns to settle in Phase 4, recorded 2026-08-07
-
-Written down now because they were found while pre-flighting the phase, and each
-one is cheaper to decide before 2918 lines are ported than after.
-
-**1. The results grid needs a search-results fixture, like the part table has
-`fixtures/board.json`.** This is the load-bearing one — the whole phase's screen
-inventory depends on it.
-
-The reason is not that CI has no network: it plainly does, it installs PySide6
-over it. It is that **`.github/workflows/qt-screens.yml` asserts the committed
-PNGs match what renders**, and a grid built from live search results renders
-differently every run — the stock figures are the numbers most likely to move,
-and they are rendered in three columns. That gate would fail permanently. Three
-lesser reasons on top: LCSC 403s *whole networks* (§4) and GitHub's shared runner
-ranges are prime candidates; `_HostBreaker` opens a host for ten minutes after
-three hard failures, so a blocked run stays blocked for the rest of the job; and
-a test asserting on live stock asserts on a number whose disagreement across
-sources is the thing this fork exists to *show*, not to pin.
-
-Precedent to follow: Phase 2 gave `Library` an `allow_network` parameter,
-defaulting to `True` so the wx plugin is unchanged, and the Qt part list passes
-`False`. **The probe and the tests must never touch the wire.** Same shape here.
-
-**2. Capturing that fixture live is authorised** — granted 2026-08-07, in
-response to this concern. Do it early in Phase 4, while a request still
-succeeds, and:
-
-- capture **once**, to a file, and never on a loop. The user's standing note is
-  that `wmsc.lcsc.com` 403s this network always and EasyEDA bans it on bursts, so
-  a capture script that retries is the thing that costs the next session's
-  access;
-- capture the **raw** response, not a post-processed shape, so a later change to
-  how `api.py` parses it does not need a new capture;
-- capture a keyword with a wide result set and a full parametric spread —
-  `10nF 0402` is what §5.2's reference screenshots used, including its
-  `18326 parts match … showing the first 100` line;
-- capture the **thumbnails** too, or the grid's 108px rows have nothing in them.
-  One id per search row, from JLC's file service, per §5.2.
-
-Hand-building the fixture from `api.py`'s dataclasses is the fallback if the
-capture 403s, but it is strictly worse: a fixture invented from the shapes we
-*think* the API returns is exactly the mistake trap 4 punished — a stand-in more
-permissive than the thing it stands for.
-
-**3. `None` is not `0`, and the fixture has to preserve that.** A source
-answering nothing renders `?`; a part with no stock renders `0`. If the capture
-is serialised through something that coerces missing to zero, the fixture will
-quietly encode the one bug §4 says never to reintroduce.
-
-**4. The three-inventory distinction has to survive the fixture too.** JLC
-assembly, LCSC retail and the EasyEDA fallback are different warehouses.
-§5.2's Inventory selector collapses a column to width 0 rather than removing it,
-so the fixture needs rows where the two figures *disagree* — otherwise the
-selector looks like it does nothing.
-
-**5. Add an `explorer` screen to `qt_probe.py` with fresh `probe_settings()`,**
-and expect more than one: side-panel vs inline detail, and facets expanded vs
-collapsed, are different screens by §5.2 and CI covers whatever `SCREENS` names.
-
-**Re-run `scripts/live_ipc_check.py` whenever `kicad_bridge` is touched.** It
-exercises every write helper against a running KiCad, asserts by re-reading and
-restores everything it changed. It cannot go in CI — it needs KiCad open with a
-board — and that is exactly why it has to be run deliberately:
-
-```bash
-mkdir -p /tmp/lcsc-live
-cp ~/Research/temperature-controller/PCB/PCB_new.kicad_pcb /tmp/lcsc-live/livecheck.kicad_pcb
-open -a "/Applications/KiCad/PCB Editor.app" /tmp/lcsc-live/livecheck.kicad_pcb
-.venv/bin/python scripts/live_ipc_check.py
-```
-
-It refuses to run unless the open board's project path looks disposable, because
-a verification tool that can reach a real project is one bad afternoon from
-being a data-loss tool. Close the board **without saving** afterwards.
+Also still open, and older: **`schematic_cleared_refs` and
+`schematic_sync_pending` are maintained but read by nobody** — Phase 7 consumes
+them.
 
 House rules that have been followed so far and should keep being followed:
 
 - **Never claim a UI change works without looking at the PNG.**
   `.venv/bin/python scripts/qt_probe.py --all --theme both` and then actually
   read the images. `--geometry` is a supplement, never a substitute. Commit the
-  PNGs in the same commit as the UI change.
+  PNGs in the same commit as the UI change. Phase 4 found two real bugs this way
+  that no test caught, and one that only a test caught — the two instruments do
+  not overlap.
 - `scripts/qt_probe.py --list` names every screen; add a `screen_*` builder plus
   an entry in `SCREENS` and CI covers it automatically. Give each screen fresh
   `probe_settings()` — the main window saves its geometry on close and the next
   screen would restore it.
-- `lcsc_suite/shared.py` is the only sanctioned way to import `kicad_lcsc_suite`'s
-  logic modules, and `shared.LEGACY_ROOT` the only way to reach its *data*
-  (`icons/`, the wx `settings.json`). Do not add `sys.path` hacks anywhere else.
+- **The probe and the tests must never touch the wire.** `search_source.
+  build_source()` defaults to live; the probe and the tests pass a
+  `FixtureSource`. Same shape as `Library(allow_network=False)` from Phase 2.
+- `lcsc_suite/shared.py` is the only sanctioned way to import
+  `kicad_lcsc_suite`'s logic modules, and `shared.LEGACY_ROOT` the only way to
+  reach its *data* (`icons/`, the wx `settings.json`). No `sys.path` hacks.
 - `lcsc/api.py` is **copied, not edited**. If a UI need seems to require an API
-  change, change the UI.
-- The fixture board (`lcsc_suite/fixtures/board.json`, derived from the real
-  temperature-controller PCB) has 110 footprints, 93 assigned, 8 excluded from
-  both BOM and POS, and `R12` marked DNP — enough for every column state to
-  appear at once. `FixtureBoard(honour_footprint_writes=False)` reproduces trap 2
-  exactly and is how the read-back assertions are proved.
-- Run `.venv/bin/python -m pytest -q` at every phase boundary. It was 436 tests
-  at the start of the migration and is 592 now. Every file must also pass **on
-  its own** — the modules under test are shared, so a toolkit stub installed by
-  one file is visible to the next:
+  change, change the UI — Phase 4 did exactly that three times.
+- The board fixture (`lcsc_suite/fixtures/board.json`) has 110 footprints, 93
+  assigned, 8 excluded from both BOM and POS, and `R12` marked DNP.
+  `FixtureBoard(honour_footprint_writes=False)` reproduces trap 2 and staged
+  `_pending` writes reproduce trap 4.
+- Run `.venv/bin/python -m pytest -q` at every phase boundary. 436 at the start of
+  the migration, 671 now. Every file must also pass **on its own**:
   `for f in tests/test_*.py; do .venv/bin/python -m pytest -q "$f" >/dev/null || echo "FAILS ALONE: $f"; done`
-- `ruff check --extend-exclude=lib` must pass. `ruff format --check` still
-  reports four **untouched upstream** files (`corrections.py`, `events.py`,
-  `kicad_drc.py`, `partdetails.py`, now under `kicad_lcsc_suite/`) — leave them
-  alone, as CLAUDE.md says.
+- `ruff check --extend-exclude=lib` must pass. `ruff format --check` still reports
+  the same four **untouched upstream** files (`corrections.py`, `events.py`,
+  `kicad_drc.py`, `partdetails.py`) — leave them alone, as CLAUDE.md says.
+- **Re-run `scripts/live_ipc_check.py` whenever `kicad_bridge` is touched.** It
+  needs KiCad open with a **copy** of a board and refuses a project path that does
+  not look disposable:
+
+  ```bash
+  mkdir -p /tmp/lcsc-live
+  cp ~/Research/temperature-controller/PCB/PCB_new.kicad_pcb /tmp/lcsc-live/livecheck.kicad_pcb
+  open -a "/Applications/KiCad/PCB Editor.app" /tmp/lcsc-live/livecheck.kicad_pcb
+  .venv/bin/python scripts/live_ipc_check.py
+  ```
+
+  Close the board **without saving** afterwards.
+- **Do not re-run `scripts/capture_explorer_fixture.py`** unless the payload shape
+  has actually changed. It spends live requests against hosts that rate-limit and
+  geo-block, and the fixture it writes is already committed.
 - The legacy wx plugin stays installed and working until Phase 8.
   `./install.sh --list` shows both halves.
 
@@ -1220,19 +1344,16 @@ Environment notes worth knowing:
 
 - `./install.sh --app` has been run; the IPC plugin is symlinked at
   `~/Documents/KiCad/10.0/plugins/lcsc_suite` → `kicad_plugin/`, and the venv is
-  `.venv` (Python 3.14.5, PySide6 6.11.1, kicad-python). The spike plugin has
-  been deleted as §9 asked.
-- KiCad's API server is enabled. The launcher was verified end to end with a
-  deliberately poisoned `PYTHONHOME`, and its log goes to
-  `~/.local/state/lcsc-suite/plugin.log` — the only place a start-up traceback
-  can be read, because KiCad discards both streams.
+  `.venv` (Python 3.14.5, PySide6 6.11.1, kicad-python).
+- KiCad's API server is enabled. The launcher's log goes to
+  `~/.local/state/lcsc-suite/plugin.log` — the only place a start-up traceback can
+  be read, because KiCad discards both streams.
 - Settings live at
-  `~/Library/Preferences/kicad-lcsc-suite/LCSC Suite/settings.json` and were
-  imported once from the wx plugin's file — which is now
-  `kicad_lcsc_suite/settings.json`, inside the package, because that is what
-  `helpers.PLUGIN_PATH` resolves to. `shared.LEGACY_ROOT` is what finds it.
+  `~/Library/Preferences/kicad-lcsc-suite/LCSC Suite/settings.json`.
 - The offscreen platform's virtual screen is **800x800**. `resize()` ignores it
-  (so screenshots are 1300x772) but `restoreGeometry()` clamps to it, which is
-  why the geometry test asserts height only.
-- No Windows machine is available here, so §7's "one real Windows pass per phase"
-  has not been done for any phase. Flagged, not silently skipped.
+  (so screenshots come out at their stated size) but `restoreGeometry()` clamps to
+  it, which is why the geometry test asserts height only.
+- Reachability changes by the day. One line to check before blaming the UI:
+  `curl -o /dev/null -w '%{http_code}\n' 'https://wmsc.lcsc.com/ftps/wm/product/detail?productCode=C1592'`
+  It answered 200 for the Phase 4 capture, which the standing note says is the
+  exception rather than the rule.

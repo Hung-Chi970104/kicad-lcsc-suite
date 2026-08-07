@@ -36,7 +36,9 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QMessageBox
 
 from .kicad_bridge import sanitize_lcsc
+from .search_source import build_source
 from .ui.assign_dialog import AssignNumberDialog, describe
+from .ui.explorer import ExplorerWindow
 from .ui.main_window import MainWindow
 from .undo import UndoStack
 
@@ -60,12 +62,21 @@ def _exclusion_name(bom: bool, pos: bool) -> str:
 class SuiteController(QObject):
     """Owns the part list, the window, and the decisions between them."""
 
-    def __init__(self, board, parts, settings=None, parent=None) -> None:
+    def __init__(self, board, parts, settings=None, source=None, parent=None) -> None:
         super().__init__(parent)
         self.board = board
         self.parts = parts
         self.settings = settings
+        #: Where the Explorer's data comes from. Injected so the probe and the
+        #: tests can pass a fixture — see :mod:`lcsc_suite.search_source`. Built
+        #: lazily rather than here, because a session that never opens the
+        #: Explorer should not pay for it.
+        self._source = source
         self.window = MainWindow(board, settings=settings, parts=parts)
+        #: The one Explorer, kept so the toolbar button re-targets it rather
+        #: than opening a second. Two of them would each hold a search, a fill
+        #: and a photo window, and only one can win the assign.
+        self.explorer: Optional[ExplorerWindow] = None
         #: References whose number this session *removed*. Phase 7's "To
         #: schematic" needs them: a reference merely blank in the store may be
         #: one the schematic has and the board never picked up, and exporting
@@ -95,6 +106,7 @@ class SuiteController(QObject):
         window.row_menu_triggered.connect(self.on_row_menu)
 
         window.undo_action.triggered.connect(self.undo_last)
+        window.explorer_action.triggered.connect(self.open_explorer)
         window.assign_action.triggered.connect(self.assign)
         window.remove_action.triggered.connect(self.remove)
         window.save_mappings_action.triggered.connect(self.save_mappings)
@@ -343,6 +355,76 @@ class SuiteController(QObject):
         }
         return numbers.pop() if len(numbers) == 1 else ""
 
+    # -- the Explorer -------------------------------------------------------
+
+    def source(self):
+        """Return the Explorer's data source, building it on first use.
+
+        Live unless one was injected. Deferred because constructing the fixture
+        source reads a megabyte of captured payloads, and a session that only
+        assigns numbers by hand should not pay for that.
+        """
+        if self._source is None:
+            self._source = build_source()
+        return self._source
+
+    def open_explorer(self, *_) -> None:
+        """Open the Explorer over the current selection, or re-target it.
+
+        Re-targeted rather than reopened, for the same reason the app takes a
+        single-instance lock on the main window: two Explorers would each hold a
+        search, two background fills and a photo window, and both would be
+        writing to the same board through this object.
+        """
+        references = self.window.selected_references()
+        if self.explorer is not None:
+            self.explorer.set_references(references)
+            self.explorer.show()
+            self.explorer.raise_()
+            self.explorer.activateWindow()
+            return
+        self.explorer = self.build_explorer(references)
+        self.explorer.show()
+
+    def build_explorer(self, references=None, keyword: str = "") -> ExplorerWindow:
+        """Construct the Explorer window and connect it. Also the probe's entry.
+
+        ``keyword`` defaults to the value the selected footprints agree on, the
+        way the wx plugin seeds its search from the part being replaced. A mixed
+        selection seeds nothing rather than picking one arbitrarily.
+        """
+        references = list(references or [])
+        info = self.board.info()
+        explorer = ExplorerWindow(
+            self.window,
+            self.source(),
+            settings=self.settings,
+            references=references,
+            keyword=keyword or self._shared_value(references),
+            board_path=info.path,
+        )
+        explorer.assign_requested.connect(
+            lambda number, stock: self.assign_number(
+                explorer.references, number, stock=stock
+            )
+        )
+        explorer.finished.connect(self._on_explorer_closed)
+        return explorer
+
+    def _on_explorer_closed(self, *_) -> None:
+        """Forget the closed Explorer so the next click builds a fresh one."""
+        self.explorer = None
+
+    def _shared_value(self, references) -> str:
+        """Return the value every one of ``references`` carries, or ``""``."""
+        wanted = set(references)
+        values = {
+            view.value
+            for view in self.board.footprints()
+            if view.reference in wanted and view.value
+        }
+        return values.pop() if len(values) == 1 else ""
+
     # -- exclusions ---------------------------------------------------------
 
     def toggle_exclusions(self, bom: bool = False, pos: bool = False) -> None:
@@ -470,9 +552,9 @@ class SuiteController(QObject):
         )
 
 
-def build(board, parts, settings=None) -> SuiteController:
+def build(board, parts, settings=None, source=None) -> SuiteController:
     """Build the controller and its window. The app's one assembly point."""
-    return SuiteController(board, parts, settings=settings)
+    return SuiteController(board, parts, settings=settings, source=source)
 
 
 __all__ = ["HANDLED_ROW_MENU", "SuiteController", "build"]
