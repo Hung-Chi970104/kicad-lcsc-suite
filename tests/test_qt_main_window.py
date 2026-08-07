@@ -95,8 +95,14 @@ def test_window_identity(window):
 
 
 def test_top_toolbar_has_the_buttons_in_order(window):
-    """§5.1's upper toolbar, left group then right group."""
+    """§5.1's upper toolbar, left group then right group.
+
+    ``Undo`` is ours, not §5.1's: the wx plugin had no undo of its own and left
+    the board's history to KiCad, which cannot reach the project database. See
+    lcsc_suite.undo.
+    """
     assert _labels(window.main_toolbar) == [
+        "Undo",
         "Export BOM / CPL",
         "From schematic",
         "To schematic",

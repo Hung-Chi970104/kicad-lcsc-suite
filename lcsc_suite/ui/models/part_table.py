@@ -145,7 +145,7 @@ class PartRow:
             footprint=part.get("footprint", ""),
             lcsc=part.get("lcsc") or "",
             part_type=details.get("type", ""),
-            stock=_as_stock(stock),
+            stock=as_stock(stock),
             params=details.get("params", ""),
             exclude_from_bom=bool(part.get("exclude_from_bom")),
             exclude_from_pos=bool(part.get("exclude_from_pos")),
@@ -153,8 +153,15 @@ class PartRow:
         )
 
 
-def _as_stock(value) -> Optional[int]:
-    """Coerce a stock figure, keeping "nobody answered" distinct from zero."""
+def as_stock(value) -> Optional[int]:
+    """Coerce a stock figure, keeping "nobody answered" distinct from zero.
+
+    Public because it is the only spelling of this rule. ``store.create_part``
+    defaults the column to the empty string rather than to SQL ``NULL``, so a
+    figure read back out is ``''``, ``None``, or a number as text depending on
+    how the row got there — and every caller that hands one to
+    ``PartList.assign`` has to normalise it the same way or ``int('')`` raises.
+    """
     if value in ("", None):
         return None
     try:
@@ -359,7 +366,7 @@ class PartTableModel(QAbstractTableModel):
     ) -> bool:
         """Fill in the three columns ``lcsc/details.py`` resolves."""
         return self.update_row(
-            reference, part_type=part_type, stock=_as_stock(stock), params=params
+            reference, part_type=part_type, stock=as_stock(stock), params=params
         )
 
     def set_standard_trigger_refs(self, references) -> None:
