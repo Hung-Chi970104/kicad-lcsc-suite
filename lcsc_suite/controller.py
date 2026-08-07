@@ -27,8 +27,9 @@ Two consequences worth knowing:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import logging
-from typing import Sequence
+from typing import Optional, Sequence
 
 from PySide6.QtCore import QObject
 from PySide6.QtGui import QGuiApplication
@@ -37,6 +38,7 @@ from PySide6.QtWidgets import QMessageBox
 from .kicad_bridge import sanitize_lcsc
 from .ui.assign_dialog import AssignNumberDialog, describe
 from .ui.main_window import MainWindow
+from .undo import UndoStack
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +48,13 @@ log = logging.getLogger(__name__)
 #: changes shape between releases is harder to relearn than one with a disabled
 #: entry in it.
 HANDLED_ROW_MENU = frozenset({"copy-lcsc", "paste-lcsc", "find-mapping", "add-mapping"})
+
+
+def _exclusion_name(bom: bool, pos: bool) -> str:
+    """Name the attributes a toggle touched, for the Undo tooltip."""
+    if bom and pos:
+        return "BOM and POS"
+    return "BOM" if bom else "POS"
 
 
 class SuiteController(QObject):
@@ -66,6 +75,15 @@ class SuiteController(QObject):
         #: Phase 7 reads it; nothing here acts on it, because board<->schematic
         #: sync is never automatic.
         self.schematic_sync_pending = False
+        #: Reversible actions, most recent last. See :mod:`lcsc_suite.undo` for
+        #: why KiCad's own undo history is not enough on its own.
+        self.undo_stack = UndoStack()
+        # Set while a reversal is running, so the reverting writes do not record
+        # reversals of their own and turn Undo into a toggle.
+        self._reverting = False
+        # Collects reversals while one user action performs several writes. See
+        # _grouped.
+        self._group: Optional[list] = None
         self._connect()
 
     # -- wiring -------------------------------------------------------------
@@ -76,6 +94,7 @@ class SuiteController(QObject):
         window.set_row_menu_enabled(HANDLED_ROW_MENU)
         window.row_menu_triggered.connect(self.on_row_menu)
 
+        window.undo_action.triggered.connect(self.undo_last)
         window.assign_action.triggered.connect(self.assign)
         window.remove_action.triggered.connect(self.remove)
         window.save_mappings_action.triggered.connect(self.save_mappings)
@@ -88,6 +107,132 @@ class SuiteController(QObject):
         window.toggle_pos_action.triggered.connect(
             lambda: self.toggle_exclusions(pos=True)
         )
+        self._publish_undo()
+
+    # -- undo ---------------------------------------------------------------
+
+    def _record(self, description: str, revert) -> None:
+        """Remember how to reverse an action that has already succeeded."""
+        if self._reverting:
+            # A reversal's own writes are not separately reversible; recording
+            # them would make the button alternate between two states forever.
+            return
+        if self._group is not None:
+            self._group.append((description, revert))
+            return
+        self.undo_stack.push(description, revert)
+        self._publish_undo()
+
+    @contextmanager
+    def _grouped(self, description: str):
+        """Record every write inside this block as a single reversal.
+
+        ``Find mapping`` is one thing the user did and up to one commit per
+        distinct number — the same reason the forward write batches by number.
+        Without this, reversing it would take one Undo press per number, which
+        is not the action anybody performed.
+        """
+        if self._reverting or self._group is not None:
+            yield
+            return
+        self._group = []
+        try:
+            yield
+        finally:
+            collected, self._group = self._group, None
+        if not collected:
+            return
+        # Reversed: undo the last write first, so nested changes to the same
+        # reference come back in the order they were made.
+        reverts = [revert for _, revert in reversed(collected)]
+
+        def revert_all() -> None:
+            for revert in reverts:
+                revert()
+
+        self.undo_stack.push(description, revert_all)
+        self._publish_undo()
+
+    def _publish_undo(self) -> None:
+        """Tell the window what the Undo button would reverse, if anything."""
+        self.window.set_undo_available(self.undo_stack.description)
+
+    def undo_last(self, *_) -> None:
+        """Reverse the most recent recorded action, board and database both.
+
+        A reversal is a *new* verified write, not a rollback — see
+        :mod:`lcsc_suite.undo`. If it fails the board is unchanged, so the entry
+        goes back on the stack rather than being lost: the user's next move is to
+        fix whatever refused the write and press Undo again.
+        """
+        entry = self.undo_stack.pop()
+        if entry is None:
+            return
+        self._reverting = True
+        try:
+            entry.revert()
+        except Exception as exc:  # noqa: BLE001 - report it, keep the window up
+            log.exception("Could not reverse %s", entry.description)
+            self.undo_stack.push(entry.description, entry.revert)
+            self._failed_write(f"reverse {entry.description}", exc)
+        else:
+            log.info("Reversed: %s", entry.description)
+        finally:
+            self._reverting = False
+            self._publish_undo()
+            self.window.reload_parts()
+
+    def _lcsc_reversal(self, state: dict, cleared: set):
+        """Build the callable that puts an LCSC snapshot back.
+
+        Grouped by ``(number, stock)`` so a batch that was one commit going
+        forward is one commit coming back — twenty identical capacitors are one
+        entry in KiCad's undo history either way.
+
+        ``cleared`` restores ``schematic_cleared_refs`` as well, because a
+        reference *deliberately cleared* and one merely blank are different to
+        Phase 7 and that difference cannot be reconstructed later. An undo that
+        left the set alone would quietly tell the schematic export to wipe a
+        number the user had just got back.
+        """
+        references = list(state)
+
+        def revert() -> None:
+            by_value: dict = {}
+            for reference, (number, stock) in state.items():
+                by_value.setdefault((number, stock), []).append(reference)
+            for (number, stock), refs in by_value.items():
+                if number:
+                    self.parts.assign(sorted(refs), number, stock=stock)
+                else:
+                    self.parts.clear(sorted(refs))
+            self.schematic_cleared_refs.difference_update(references)
+            self.schematic_cleared_refs.update(cleared)
+            self.schematic_sync_pending = True
+
+        return revert
+
+    def _exclusion_reversal(self, state: dict, bom: bool, pos: bool):
+        """Build the callable that puts a BOM/POS snapshot back.
+
+        ``set_exclusions`` rather than ``toggle_exclusions``: a restore has a
+        target state and toggling would flip whatever the board happens to say
+        now, which after any other change is the wrong answer.
+        """
+
+        def revert() -> None:
+            if bom:
+                for wanted in (True, False):
+                    refs = [ref for ref, (b, _) in state.items() if b is wanted]
+                    if refs:
+                        self.parts.set_exclusions(sorted(refs), bom=wanted)
+            if pos:
+                for wanted in (True, False):
+                    refs = [ref for ref, (_, p) in state.items() if p is wanted]
+                    if refs:
+                        self.parts.set_exclusions(sorted(refs), pos=wanted)
+
+        return revert
 
     # -- assignment ---------------------------------------------------------
 
@@ -120,6 +265,10 @@ class SuiteController(QObject):
         """
         if not references or not number:
             return
+        # Read before the write: this is what Undo has to put back, and after the
+        # write the old numbers and stock figures are gone from both halves.
+        before = self.parts.lcsc_state(references)
+        cleared = self.schematic_cleared_refs.intersection(references)
         try:
             written = self.parts.assign(references, number, stock=stock)
         except ValueError as exc:
@@ -134,6 +283,13 @@ class SuiteController(QObject):
         self.schematic_cleared_refs.difference_update(written)
         self.schematic_sync_pending = True
         log.info("Assigned %s to %s", number, describe(written))
+        self._record(
+            f"assign {number} to {describe(written)}",
+            self._lcsc_reversal(
+                {ref: before[ref] for ref in written if ref in before},
+                cleared.intersection(written),
+            ),
+        )
         self.window.reload_parts()
 
     def remove(self, *_) -> None:
@@ -151,6 +307,8 @@ class SuiteController(QObject):
             for view in self.board.footprints()
             if view.reference in selected and view.lcsc
         }
+        before = self.parts.lcsc_state(references)
+        cleared = self.schematic_cleared_refs.intersection(references)
         try:
             written = self.parts.clear(references)
         except Exception as exc:  # noqa: BLE001 - report it, keep the window up
@@ -162,6 +320,13 @@ class SuiteController(QObject):
         self.schematic_cleared_refs.update(had_numbers.intersection(written))
         self.schematic_sync_pending = True
         log.info("Removed the LCSC number from %s", describe(written))
+        self._record(
+            f"remove the LCSC number from {describe(written)}",
+            self._lcsc_reversal(
+                {ref: before[ref] for ref in written if ref in before},
+                cleared.intersection(written),
+            ),
+        )
         self.window.reload_parts()
 
     def _shared_number(self, references: Sequence[str]) -> str:
@@ -185,11 +350,22 @@ class SuiteController(QObject):
         references = self.window.selected_references()
         if not references:
             return
+        before = self.parts.exclusion_state(references)
         try:
             self.parts.toggle_exclusions(references, bom=bom, pos=pos)
         except Exception as exc:  # noqa: BLE001 - report it, keep the window up
             log.exception("Could not change the BOM/POS exclusions")
             self._failed_write("change the BOM/POS attributes", exc)
+        # Recorded even when the write raised, and deliberately: this helper
+        # writes BOM and POS in two commits, so a failure on the second leaves
+        # the first applied. Restoring to a state the board is already in is a
+        # verified no-op; not being able to get back from a half-applied toggle
+        # is not.
+        if before:
+            self._record(
+                f"toggle {_exclusion_name(bom, pos)} on {describe(list(before))}",
+                self._exclusion_reversal(before, bom=bom, pos=pos),
+            )
         self.window.reload_parts()
 
     # -- mappings -----------------------------------------------------------
@@ -223,8 +399,9 @@ class SuiteController(QObject):
         by_number: dict = {}
         for reference, number in found.items():
             by_number.setdefault(number, []).append(reference)
-        for number, refs in by_number.items():
-            self.assign_number(sorted(refs), number)
+        with self._grouped(f"assign remembered numbers to {describe(sorted(found))}"):
+            for number, refs in by_number.items():
+                self.assign_number(sorted(refs), number)
 
     # -- the row menu -------------------------------------------------------
 

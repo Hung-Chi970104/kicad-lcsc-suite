@@ -399,6 +399,22 @@ class _Board:
         ]
         return self.apply(edits, _undo_message("exclude from POS", edits))
 
+    def run_kicad_action(self, action: str):
+        """Ask KiCad to run one of its own tool actions, by name.
+
+        **For diagnostics only, and nothing in the app calls it.** ``kipy`` flags
+        ``run_action`` as unstable — KiCad does not promise the action names — and
+        an action operates on whatever the editor's state happens to be, which is
+        not something a write helper can verify. It exists so
+        ``scripts/live_ipc_check.py`` can ask the one question no documentation
+        answers: whether KiCad's own undo covers a write made over IPC.
+
+        The app's Undo button does *not* go through here. It reverses by writing
+        the previous values back, because KiCad's history cannot reach the project
+        database — see :mod:`lcsc_suite.undo`.
+        """
+        raise BridgeError(f"{type(self).__name__} cannot run KiCad actions")
+
     # -- backend hooks ------------------------------------------------------
 
     def _begin(self):  # pragma: no cover - backends override
@@ -489,6 +505,15 @@ class _Ipc(_Board):
             # shape pcbnew.GetBuildVersion() returns in the wx plugin.
             kicad_version=getattr(version, "full_version", str(version)),
         )
+
+    def run_kicad_action(self, action: str):
+        """Run a KiCad tool action by name. Diagnostics only — see the base."""
+        result = self._kicad.run_action(action)
+        # Anything we read afterwards has to come off the board again: the action
+        # changed the editor's state, not ours.
+        self._cache = None
+        self._live = {}
+        return getattr(result, "status", result)
 
     def _read_footprints(self) -> Iterable[FootprintView]:
         self._live = {}

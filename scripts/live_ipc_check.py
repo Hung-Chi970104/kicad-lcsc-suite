@@ -165,6 +165,57 @@ def check_attributes(board, report: Report, footprints) -> None:
     )
 
 
+def check_kicad_undo(board, report: Report, footprints) -> None:
+    """Ask whether KiCad's *own* undo covers a write made over IPC.
+
+    Reported, not asserted, and it is the only check here that does not gate the
+    exit status: the answer belongs to KiCad, not to us, and the app carries its
+    own undo either way (see ``lcsc_suite.undo``). What it settles is whether
+    Cmd+Z **in the PCB editor** is a second route back for the board half, which
+    is worth knowing and is not documented anywhere we can read.
+
+    ``run_action`` is flagged unstable by ``kipy`` — KiCad does not promise the
+    action names — so a failure to trigger it is reported as "could not ask",
+    never as "undo is broken".
+    """
+    candidates = [view for view in footprints if view.lcsc_field]
+    if not candidates:
+        report.section("6. does KiCad's own undo cover an IPC write — SKIPPED")
+        return
+    victim = candidates[0]
+    original = victim.lcsc
+    report.section(
+        f"6. does KiCad's own undo cover an IPC write? ({victim.reference}, "
+        "reported only — see lcsc_suite.undo)"
+    )
+    board.set_lcsc({victim.reference: PROBE_NUMBERS[0]})
+    if board.footprint(victim.reference).lcsc != PROBE_NUMBERS[0]:
+        print("  [ ?? ] could not set up the probe write; skipping")
+        return
+    try:
+        status = board.run_kicad_action("common.Interactive.undo")
+    except Exception as exc:  # noqa: BLE001 - an unstable API, reported not failed
+        print(f"  [ ?? ] could not ask KiCad to undo: {exc}")
+    else:
+        after = board.footprint(victim.reference).lcsc
+        covered = after == original
+        print(
+            f"  [{'YES ' if covered else 'NO  '}] KiCad's undo "
+            f"{'restored' if covered else 'did NOT restore'} the field "
+            f"(now {after or 'blank'!r}, status {status})"
+        )
+        if not covered:
+            print(
+                "         So Cmd+Z in the PCB editor is not a route back for "
+                "this. The app's own Undo button is."
+            )
+    # Restore unconditionally: if KiCad's undo did work this is a no-op, and if
+    # it did not, the probe number is still on the board.
+    if board.footprint(victim.reference).lcsc != original:
+        board.set_lcsc({victim.reference: original})
+    report.check("restored", board.footprint(victim.reference).lcsc == original)
+
+
 def check_validation(board, report: Report, footprints) -> None:
     """Refuse a value that is not an LCSC number, before touching the board."""
     report.section("5. reject a value that is not an LCSC number")
@@ -228,6 +279,7 @@ def main(argv=None) -> int:
     check_batch(board, report, footprints)
     check_attributes(board, report, footprints)
     check_validation(board, report, footprints)
+    check_kicad_undo(board, report, footprints)
 
     if report.failures:
         print(f"\nFAILURES: {', '.join(report.failures)}", file=sys.stderr)

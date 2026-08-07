@@ -30,6 +30,7 @@ wins.
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from PySide6.QtCore import (
     QByteArray,
@@ -95,6 +96,16 @@ LOG_HEIGHT = 128
 #: and forgotten in the other.
 COLUMNS = MODEL_COLUMNS
 
+
+#: Shown on the Undo button when there is nothing to reverse. It says what the
+#: button's scope *is*, because "Undo" next to a board editor that has its own
+#: undo history is otherwise a fair question.
+UNDO_TOOLTIP_EMPTY = (
+    "Reverse the last change this window made — an assignment, a removal or a "
+    "BOM/POS toggle. Nothing to reverse yet.\n\n"
+    "This is not KiCad's undo: it puts back the project database as well as the "
+    "board, which Cmd+Z in the PCB editor cannot do."
+)
 
 #: §5.1's row context menu: ``(id, label)``, ``None`` for a separator. Ids are
 #: what a controller dispatches on; the labels are free to be reworded.
@@ -170,6 +181,23 @@ class MainWindow(QMainWindow):
         bar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, bar)
         self.main_toolbar = bar
+
+        # First in the left group, and a labelled button rather than only a
+        # keyboard shortcut, because Cmd+Z is ambiguous the moment two windows
+        # are involved: KiCad owns the board's undo history but this window is
+        # the one with focus after a change is made here. See lcsc_suite.undo.
+        self.undo_action = self._action(
+            bar,
+            "Undo",
+            "mdi-undo.png",
+            UNDO_TOOLTIP_EMPTY,
+        )
+        self.undo_action.setEnabled(False)
+        # StandardKey, so this is Cmd+Z on macOS and Ctrl+Z elsewhere without
+        # spelling either one out.
+        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        bar.addSeparator()
 
         self.export_action = self._action(
             bar,
@@ -627,6 +655,24 @@ class MainWindow(QMainWindow):
         """Persist a setting, tolerating there being no Settings object."""
         if self.settings is not None:
             self.settings.set(section, key, value)
+
+    def set_undo_available(self, description: Optional[str]) -> None:
+        """Enable the Undo button and name what it would reverse.
+
+        The label stays ``Undo`` — a toolbar button whose text changes width
+        makes the whole toolbar shuffle sideways after every action — so the
+        action being reversed goes in the tooltip.
+        """
+        self.undo_action.setEnabled(bool(description))
+        if description:
+            self.undo_action.setToolTip(
+                f"Reverse: {description}\n\n"
+                "Puts back the board and the project database both. This is not "
+                "KiCad's undo — reversing costs its own entry in KiCad's undo "
+                "history rather than removing one."
+            )
+        else:
+            self.undo_action.setToolTip(UNDO_TOOLTIP_EMPTY)
 
     def set_part_buttons_enabled(self, enabled: bool) -> None:
         """Enable or disable the actions that need a selection.

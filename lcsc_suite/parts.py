@@ -35,7 +35,7 @@ from .shared import (
     library as library_module,
     store as store_module,
 )
-from .ui.models.part_table import PartRow
+from .ui.models.part_table import PartRow, as_stock
 
 log = logging.getLogger(__name__)
 
@@ -254,6 +254,46 @@ class PartList:
         except Exception:  # noqa: BLE001 - a broken cache must not block the list
             log.debug("Local detail lookup for %s failed", lcsc, exc_info=True)
             return {}
+
+    # -- snapshots ----------------------------------------------------------
+    #
+    # What an action has to remember to be reversible. Both read the *board* for
+    # the things the board owns, because the board is the truth the store is
+    # reconciled against; only the stock figure comes from the store, which is
+    # the only place it is kept.
+
+    def lcsc_state(self, references: Sequence[str]) -> dict:
+        """Snapshot ``{reference: (number, stock)}`` for each of ``references``.
+
+        The stock figure travels with the number because :meth:`clear` drops it
+        and :meth:`assign` will not re-derive it — so a reversal that restored
+        only the number would put the row back showing ``?`` in a column that
+        had a figure in it a moment earlier.
+
+        Normalised through :func:`as_stock` on the way out, because
+        ``store.create_part`` defaults the column to ``''`` rather than to SQL
+        ``NULL`` and handing that straight back to :meth:`assign` raises on
+        ``int('')``.
+        """
+        wanted = set(references)
+        stock_by_ref = {
+            str(part.get("reference") or ""): as_stock(part.get("stock"))
+            for part in self.store.read_all()
+        }
+        return {
+            view.reference: (view.lcsc, stock_by_ref.get(view.reference))
+            for view in self.board.footprints()
+            if view.reference in wanted
+        }
+
+    def exclusion_state(self, references: Sequence[str]) -> dict:
+        """Snapshot ``{reference: (exclude_from_bom, exclude_from_pos)}``."""
+        wanted = set(references)
+        return {
+            view.reference: (view.exclude_from_bom, view.exclude_from_pos)
+            for view in self.board.footprints()
+            if view.reference in wanted
+        }
 
     # -- writing ------------------------------------------------------------
 

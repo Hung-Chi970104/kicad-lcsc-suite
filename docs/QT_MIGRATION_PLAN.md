@@ -292,6 +292,9 @@ offscreen wx capture; these are the reference for visual parity.
 dropdown. **Both are dropped** (§1). Replace with a single `Export BOM / CPL`
 button; the left toolbar is otherwise empty.
 
+An `Undo` button precedes it, which the wx plugin did not have. See the Undo
+entry in §10 — it is not cosmetic, and KiCad's own history is not a substitute.
+
 **Upper-right toolbar**, left to right: `From schematic`, `To schematic`,
 `Corrections`, `Mappings`, `LCSC Explorer`, `Import libs`, `Offline DB`,
 `Settings`. Each is an icon above a text label.
@@ -1002,6 +1005,81 @@ bug was.
    carry — a reference *deliberately cleared* versus one merely blank — cannot be
    reconstructed later.
 3. **Windows verification still not run** for any phase.
+
+### Undo — found by using it, not by testing it (2026-08-07)
+
+Not a phase. A bug report from the first real session with the assignment path:
+`Remove LCSC number`, then Cmd+Z, and the numbers did not come back.
+
+`kicad_bridge` was not at fault — `apply()` does put exactly one entry in
+KiCad's undo history per action, and §6's Phase 3 notes are still accurate.
+**The mistake was assuming that was the whole job.** Three things were wrong at
+once, and no test could have caught any of them, because every one of them lives
+in the gap between the two processes:
+
+1. **The keystroke went nowhere.** This window bound `Ctrl+W`, `Ctrl+Q` and
+   `Shift+Esc` and nothing else. Right after clicking a button *in our window*,
+   our window has focus — so Cmd+Z was delivered here and matched no action at
+   all. KiCad's undo history was never asked.
+2. **KiCad's undo cannot reach the project database.** A removal clears the board
+   field *and* the number and stock figure in `project.db`. Undoing the board
+   half in pcbnew leaves the database still saying unassigned — and the part
+   table reads the database, so even a *working* undo would have looked like a
+   failed one.
+3. **Nothing re-reads the board after an external change.** `PartList`
+   reconciles on our own writes. A change made in pcbnew, an undo included, is
+   invisible here until something asks the board again.
+
+So the app has its own undo, and it is the only one that covers everything an
+action changed. **`lcsc_suite/undo.py`** is an `UndoStack` of
+`(description, revert)`; `SuiteController` records one entry per action and
+`undo_last()` performs it.
+
+- **A reversal is a new verified write, not a rollback.** It goes through
+  `apply()` like anything else, so trap 2 applies to it and it costs its own
+  entry in KiCad's history. Reversing therefore leaves *two* KiCad entries rather
+  than zero — the honest price of also being able to put the database back.
+- **A refused reversal keeps its stack entry.** The board is unchanged after a
+  refused write, so the reversal is still valid; losing it would leave no way
+  back at all.
+- **`Undo` is a labelled button, first in the top-left group, plus
+  `QKeySequence.StandardKey.Undo`** (Cmd+Z on macOS, Ctrl+Z elsewhere). The
+  button exists because the keystroke is genuinely ambiguous with two windows
+  open, and a tooltip naming the action is the only place that ambiguity can be
+  explained. The label stays `Undo`; the action being reversed goes in the
+  tooltip, so the toolbar does not shuffle sideways after every change.
+- **Batching matches the forward write.** A batch reverses in one commit, and
+  `_grouped()` makes `Find mapping` — one user action, up to one commit per
+  distinct number — reverse in one press.
+- **`schematic_cleared_refs` is restored too.** A reference whose removal has
+  been reversed is not a deliberate removal any more, and Phase 7 cannot
+  reconstruct that distinction later.
+- Not reversible, deliberately: the mappings writes (`Save mappings`,
+  `Add mapping`). They are additive, project-independent and harmless, and they
+  do not clear the stack either.
+
+Two things worth knowing beyond the fix:
+
+- **`store.create_part` defaults the stock column to `''`, not SQL `NULL`.**
+  Snapshotting the raw value and handing it back to `assign()` raises on
+  `int('')`. `part_table.as_stock` was already the rule for this and is now
+  public rather than `_as_stock`; `test_an_unknown_stock_figure_survives_a_reversal`
+  pins it. Found by a test, which is the one of these that testing did catch.
+- **Whether KiCad's own undo covers an IPC write is still unanswered**, because
+  KiCad was not running for this session. `live_ipc_check.py` gained a sixth
+  check that asks it directly via `run_action("common.Interactive.undo")` and
+  **reports rather than asserts** — the answer belongs to KiCad, the action names
+  are explicitly unstable, and the app is correct either way.
+  `_Board.run_kicad_action` exists for that check alone; nothing in the app calls
+  it.
+
+New art goes in **`lcsc_suite/icons/`**, which `ui/icons.py` now searches before
+the legacy set. `mdi-undo.png` is the first entry. Phase 8 deletes
+`kicad_lcsc_suite/`, and anything of ours left inside it would go too.
+
+Tests: `tests/test_qt_undo.py` (28). 595 → 623 overall. Screens re-rendered:
+`mainwindow.png` shows the button greyed with nothing to reverse,
+`mainwindow-assigned.png` shows it live.
 
 ### Resume here → Phase 4
 
