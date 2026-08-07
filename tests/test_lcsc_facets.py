@@ -10,24 +10,7 @@ worth having, so it is worth pinning down.
 covered by `scripts/gui_probe.py` instead.
 """
 
-from pathlib import Path
-import sys
-import types
-
-_ROOT = Path(__file__).parent.parent
-
-_pkg_name = "kicadplugin"
-if _pkg_name not in sys.modules:
-    _pkg = types.ModuleType(_pkg_name)
-    _pkg.__path__ = [str(_ROOT)]
-    sys.modules[_pkg_name] = _pkg
-
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-import importlib  # noqa: E402
-
-api = importlib.import_module("kicadplugin.lcsc.api")
+from kicad_lcsc_suite.lcsc import api
 
 
 def _hit(lcsc: str, **attributes):

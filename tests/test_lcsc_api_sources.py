@@ -15,26 +15,9 @@ plugin does about that:
 Network access is stubbed throughout; nothing here touches the wire.
 """
 
-from pathlib import Path
-import sys
-import types
+import pytest
 
-_ROOT = Path(__file__).parent.parent
-
-_pkg_name = "kicadplugin"
-if _pkg_name not in sys.modules:
-    _pkg = types.ModuleType(_pkg_name)
-    _pkg.__path__ = [str(_ROOT)]
-    sys.modules[_pkg_name] = _pkg
-
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-import importlib  # noqa: E402
-
-import pytest  # noqa: E402
-
-api = importlib.import_module("kicadplugin.lcsc.api")
+from kicad_lcsc_suite.lcsc import api
 
 
 @pytest.fixture(autouse=True)

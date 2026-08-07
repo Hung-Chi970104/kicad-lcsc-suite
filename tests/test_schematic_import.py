@@ -1,30 +1,12 @@
 """Tests for reading assigned LCSC numbers out of ``.kicad_sch`` files."""
 
-import importlib.util
 from pathlib import Path
-import sys
-import types
 
-# The exporter tests already stub pcbnew and register the package alias; the
-# importer needs the same package in place to resolve its relative import of
-# schematicexport, and neither module may be imported as a bare file.
+from kicad_lcsc_suite.schematicimport import diff_against_board, read_schematic
+
+# The schematic-building helpers, shared with the exporter's tests: reading and
+# writing have to agree on the file format, so they are written once.
 from .test_schematic_sync import lock_file_for, schematic, symbol, write_schematic
-
-_ROOT = Path(__file__).parent.parent
-
-_spec = importlib.util.spec_from_file_location(
-    "kicadplugin.schematicimport", _ROOT / "schematicimport.py"
-)
-assert _spec is not None and _spec.loader is not None
-_mod = importlib.util.module_from_spec(_spec)
-_mod.__package__ = "kicadplugin"
-sys.modules["kicadplugin.schematicimport"] = _mod
-_spec.loader.exec_module(_mod)  # type: ignore[union-attr]
-
-diff_against_board = _mod.diff_against_board
-read_schematic = _mod.read_schematic
-
-assert isinstance(sys.modules["kicadplugin"], types.ModuleType)
 
 
 def lib_symbols(*definitions: str) -> str:

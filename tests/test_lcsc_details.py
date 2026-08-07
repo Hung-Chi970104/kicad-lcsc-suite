@@ -8,30 +8,12 @@ things there have to be exactly right or the estimate is silently wrong:
   columns to, because every consumer reads it by key;
 * the price-band encoding must round-trip through the estimator's own parser.
 
-Both are stdlib-only, so they run without wx or KiCad. The module is loaded
-under a fake package name using the same bootstrap as the other tests here.
+Both are stdlib-only, so they run without wx or KiCad.
 """
 
-from pathlib import Path
-import sys
-import types
-
-_ROOT = Path(__file__).parent.parent
-
-_pkg_name = "kicadplugin"
-if _pkg_name not in sys.modules:
-    _pkg = types.ModuleType(_pkg_name)
-    _pkg.__path__ = [str(_ROOT)]
-    sys.modules[_pkg_name] = _pkg
-
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-import importlib  # noqa: E402
-
-api = importlib.import_module("kicadplugin.lcsc.api")
-details = importlib.import_module("kicadplugin.lcsc.details")
-pricing = importlib.import_module("kicadplugin.bom_estimation.pricing")
+from kicad_lcsc_suite import derive_params
+from kicad_lcsc_suite.bom_estimation import pricing
+from kicad_lcsc_suite.lcsc import api, details
 
 
 def _hit(**overrides):
@@ -131,7 +113,6 @@ def test_details_from_hit_feeds_params_derivation():
     Description and category are the reason the detail fetch goes through the
     JLC search endpoint at all — the retail endpoint returns neither.
     """
-    derive_params = importlib.import_module("kicadplugin.derive_params")
 
     result = details.details_from_hit(_hit())
 
@@ -280,7 +261,6 @@ def test_canonical_category_passes_unknown_categories_through():
 
 def test_resistor_params_survive_the_round_trip_from_a_jlc_category():
     """Regression: this produced "0402WGF1003TCE 0402" before the mapping existed."""
-    derive_params = importlib.import_module("kicadplugin.derive_params")
 
     result = details.details_from_hit(
         _hit(

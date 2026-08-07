@@ -39,7 +39,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $Src = Split-Path -Parent $MyInvocation.MyCommand.Path
-# Must be a valid Python identifier — the repo directory name has hyphens.
+# The plugin package directory, whose name is what KiCad imports it as.
 $WxLinkName = 'kicad_lcsc_suite'
 $AppLinkName = 'lcsc_suite'
 $Venv = Join-Path $Src '.venv'
@@ -214,9 +214,10 @@ if ($DoApp) {
 # --- the legacy wx plugin --------------------------------------------------
 
 if ($DoWx) {
-    New-Junction $WxTarget $Src
+    $WxSource = Join-Path $Src $WxLinkName
+    New-Junction $WxTarget $WxSource
     Write-Host 'Installed the legacy wx plugin'
-    Write-Host "  source : $Src"
+    Write-Host "  source : $WxSource"
     Write-Host "  target : $WxTarget"
 }
 

@@ -2,7 +2,12 @@
 
 import json
 
-from common.translate import ComponentTranslator, Price, PriceEntry, process_description
+from db_build.common.translate import (
+    ComponentTranslator,
+    Price,
+    PriceEntry,
+    process_description,
+)
 
 # ============================================================================
 # PriceEntry Tests

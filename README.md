@@ -1,297 +1,386 @@
-# ![The main window](https://github.com/Bouni/kicad-jlcpcb-tools/raw/main/jlcpcb-icon.png) KiCAD JLCPCB tools
+# kicad-lcsc-suite
 
-<a href="https://ko-fi.com/I3I364QTM" target="_blank"><img src="https://ko-fi.com/img/githubbutton_sm.svg" height="30px"/></a> <a href="https://www.buymeacoffee.com/bouni" target="_blank"><img src="https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png" height="30px"/></a> <a href="https://github.com/sponsors/Bouni" target="_blank"><img src="https://img.shields.io/badge/-Github Sponsor-fafbfc?style=flat&logo=GitHub%20Sponsors" height="30px"/></a>
+One KiCad plugin for everything LCSC: parametric search, honest dual stock,
+symbol/footprint/3D import, and JLCPCB fabrication output.
 
-***
+This is a **fork** of [Bouni/kicad-jlcpcb-tools][bouni] with
+[uPesy/easyeda2kicad.py][e2k] vendored in and three capabilities added that
+neither tool had on its own. Upstream commits are pinned in `UPSTREAM.txt`.
 
-<img src="https://img.shields.io/badge/KiCAD-v7-green"/> <img src="https://img.shields.io/badge/KiCAD-v8-purple"/> <img src="https://img.shields.io/badge/KiCAD-v9-ff69b4"/>
+[bouni]: https://github.com/Bouni/kicad-jlcpcb-tools
+[e2k]: https://github.com/uPesy/easyeda2kicad.py
 
-***
+---
 
-[![Update parts database](https://github.com/Bouni/kicad-jlcpcb-tools/actions/workflows/update_parts_database.yml/badge.svg)](https://github.com/Bouni/kicad-jlcpcb-tools/actions/workflows/update_parts_database.yml)
+## Why this exists
 
-***
+Three separate tools each did part of the job:
 
-Plugin to generate all files necessary for JLCPCB board fabrication and assembly
+| Tool | Search | Parametric filters | Symbol/footprint import | Stock shown |
+|---|---|---|---|---|
+| kicad-jlcpcb-tools | local JLC DB | text-derived only | ✗ | JLC assembly only |
+| jlc-kicad-lib-loader | ✓ | ✗ | ✓ | — |
+| kicad-lcsc-manager | ✓ | ✗ | ✓ | — |
+| **this** | live JLC API + local DB | **real attributes** | ✓ | **assembly *and* retail** |
 
-- Gerber files
-- Excellon files
-- BOM file
-- CPL file
+## The stock problem this solves
 
-Furthermore it lets you search the JLCPCB parts database and assign parts directly to the footprints which result in them being put into the BOM file.
+**JLCPCB assembly stock and LCSC retail stock are different inventories.**
+They routinely disagree, and picking a part on the wrong number wastes a
+board spin. Measured on this project's own BOM (2026-08-02):
 
-![The main window](https://github.com/Bouni/kicad-jlcpcb-tools/raw/main/images/main.png)
+| LCSC | JLC assembly | LCSC retail | Meaning |
+|---|---|---|---|
+| C427451 (AD7124-8BBCPZ) | 0 | 0 | dead everywhere |
+| C17168 | 200,900 | 0 | assemblable, but no loose spares for rework |
+| C15849 | 14,256,016 | 1,500 | ~9,500× divergence |
+| C374726 | 13,418 | 13,415 | agree |
 
-![The parts library window](https://github.com/Bouni/kicad-jlcpcb-tools/raw/main/images/part_library.png)
+Every part view shows **both** numbers plus a plain-language warning:
 
-![The parts details dialog](https://github.com/Bouni/kicad-jlcpcb-tools/raw/main/images/part_details.png)
+- `UNAVAILABLE` — zero on both sides
+- `Assembly-blocked` — retail has stock, JLC cannot place it
+- `Assembly-only` — JLC can place it, you cannot buy spares
+- divergence factor when the two disagree by more than 25%
+- JLC minimum purchase quantity and per-order attrition ("loss") count
+- Extended-part feeder-fee reminder
 
-## Installation 💾
+Stock is cached for 5 minutes; **Refresh** clears the cache.
 
-### KiCAD PCM
+### Telling the two apart at a glance
 
-Add my custom repo to *the Plugin and Content Manager*, the URL is:
+**JLC assembly** and **LCSC retail** are separate inventories whose stock
+routinely disagrees, and each gets its own column, colour-coded by how healthy
+the figure is (green in stock, amber under 100 pieces, red at zero, grey when
+we have not been told). A `…` means the figure is still being fetched — never
+confused with a confirmed zero.
 
-```sh
-https://raw.githubusercontent.com/Bouni/bouni-kicad-repository/main/repository.json
+The **Inventory** switch at the top picks *which one* the window reports on —
+one at a time, not both. It hides the other column and its detail card, and
+re-labels the *in stock only* filter so it always says which warehouse it is
+filtering on. Sorting by either stock figure is in the **Sort** dropdown.
+
+This is a deliberate limit rather than a missing feature. The keyword search
+returns JLC assembly stock for a whole page in one request, but retail stock is
+one request *per part* — so reporting both meant a hundred extra lookups per
+search, re-fired on every filter change. `wmsc.lcsc.com` answers those with a
+403 outright in some regions, and the EasyEDA fallback rate-limits a burst that
+size and then refuses your address for minutes, which left the retail column
+full of `?`. Choosing **JLC assembly** now issues no retail requests at all;
+choosing **LCSC retail** fills the column in the background, two requests at a
+time, and the status line counts what is still loading. If both retail hosts
+refuse, the status line says so instead of showing the column as empty stock.
+
+Search results use catalogue-style rows: a large product photo, model and
+LCSC/library identity, two-line description and category, manufacturer and
+package, the chosen inventory's stock, and unit price/minimum order. Selected-part
+details can open either as a **Side panel** or as a full-width **Inline below**
+expanded row placed directly beneath the selected part, like JLCPCB's parts
+library. The choice is saved.
+
+## Parametric filters
+
+The JLC parts-library search API returns real per-part attributes
+(`Resistance`, `Tolerance`, `Temperature Coefficient`, `Power`, …). The
+Explorer harvests them across a result set, builds a dropdown per attribute
+that actually discriminates, and filters on them — LCSC's filter sidebar,
+rebuilt inside KiCad.
+
+Filters apply to the **fetched** result set (up to 100 parts per search), not
+to all of LCSC. Narrow the keyword to pull a different slice.
+
+> LCSC's own `wmsc.lcsc.com` *bulk search* endpoint returns HTTP 403 to
+> anonymous clients, so bulk filtering uses the JLC parts library. The LCSC
+> *detail* endpoint does work anonymously and supplies the retail stock,
+> warehouse split, price ladder and parameters shown for a selected part.
+
+## Compatibility
+
+| | Supported | Notes |
+|---|---|---|
+| **OS** | macOS, Windows, Linux | installer handles all three |
+| **KiCad** | 7, 8, 9, 10 | only `GetBoard().GetFileName()` is used from the `pcbnew` API |
+| **Python** | 3.9 – 3.14 | 3.9 is the floor KiCad bundles; verified on 3.9.6, 3.9.13 and 3.14.5 |
+| **wxPython** | 4.1+ | previews need `wx.svg`; without it everything else still works |
+| **Dependencies** | none to install | uses `wx` + stdlib, `certifi` if present, and the vendored zero-dependency easyeda2kicad |
+
+Deliberate portability choices:
+
+- **Paths** are compared with `normcase`/`abspath`, so `C:\Users` vs `c:/users`
+  resolves correctly on Windows.
+- **Plugin directory** is discovered per-platform — `~/Documents/KiCad/<ver>`
+  on macOS/Windows, `$XDG_DATA_HOME/kicad/<ver>` on Linux.
+- **TLS trust** falls back through `LCSC_CA_BUNDLE` / `SSL_CERT_FILE` /
+  `REQUESTS_CA_BUNDLE` → certifi → the interpreter default → common distro CA
+  bundles. Verification is never disabled; if no trust anchors exist, requests
+  fail loudly. (KiCad's macOS Python has no system trust store, which is why
+  this chain exists.)
+- **Annotations** use `Optional[X]`, not `X | None`, per upstream's
+  `CLAUDE.md`. `UP035`/`UP045` are pinned off in `pyproject.toml` so ruff
+  cannot rewrite them into 3.10-only syntax.
+
+### Verifying an install
+
+`./install.sh --list` reports where each half is linked and whether the target
+is ours. To check the wx plugin imports under **the same interpreter KiCad
+uses**:
+
+```bash
+# macOS
+/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 \
+  -c "import kicad_lcsc_suite.lcsc.api as a; print('ok', a.__file__)"
+# Windows
+& "C:\Program Files\KiCad\10.0\bin\python.exe" -c "import kicad_lcsc_suite.lcsc.api; print('ok')"
 ```
 
-![image](https://user-images.githubusercontent.com/948965/147682006-9e1dd74a-79d3-492b-a108-15d284acf2b1.png)
+If stock columns read `?`, the cause is almost always TLS trust or a blocked
+host rather than the install — see Troubleshooting below.
 
-From there you can install the plugin via the GUI.
+## Installing
 
-### Git
+### 1. Clone
 
-Simply clone this repo into your `scripting/plugins` folder.
+Clone anywhere and **keep the clone** — the installer *links* to it rather
+than copying, so this checkout is the live plugin.
 
-**Windows**
-
-```sh
-cd C:\users\<username>\Documents\kicad\<version>\scripting\plugins\  # <username> is your username, <version> can be 7.0, 8.0, or X.YY depending on the version you use
-git clone https://github.com/Bouni/kicad-jlcpcb-tools.git
+```bash
+git clone https://github.com/Hung-Chi970104/kicad-lcsc-suite.git
+cd kicad-lcsc-suite
 ```
 
-**Linux**
+### 2. Run the installer
 
-```sh
-cd /home/<username>/.local/share/kicad/<version>/scripting/plugins  # <version> can be 7.0, 8.0, or X.YY depending on the version you use
-git clone https://github.com/Bouni/kicad-jlcpcb-tools.git
+macOS / Linux:
+
+```bash
+./install.sh                 # newest KiCad found
+./install.sh 10.0            # a specific KiCad version
+./install.sh --list          # show what it detected, change nothing
+./install.sh --dir <path>    # explicit plugin directory
+./install.sh --uninstall
 ```
 
-**MacOS**
+Windows (PowerShell, **no admin needed** — it creates a directory junction,
+not a symlink):
 
-```sh
-cd ~/Library/Preferences/kicad/scripting/plugins
-git clone https://github.com/Bouni/kicad-jlcpcb-tools.git
+```powershell
+.\install.ps1
+.\install.ps1 -Version 10.0
+.\install.ps1 -Uninstall
 ```
 
-You may need to create the `scripting/plugins` folder if it does not exist.
+If PowerShell blocks the script, allow it for that session only:
 
-### Flatpak :warning:
-
-The Flatpak installation of KiCAD currently does not ship with pip and requests installed. The later is required for the plugin to work.
-In order to get it working you can run the following 3 commands:
-
-1. `flatpak run --command=sh org.kicad.KiCad`
-2. `python -m ensurepip --upgrade`
-3. `/var/data/python/bin/pip3 install requests`
-
-See [issue #94](https://github.com/Bouni/kicad-jlcpcb-tools/issues/94) for more info.
-
-## Usage 🥳
-
-To access the plugin choose `Tools → External Plugins → JLCPCB Tools` from the *PCB Editor* menus
-
-Checkout this screencast, it shows quickly how to use this plugin:
-
-![KiCAD JLCPCB example](https://raw.githubusercontent.com/Bouni/kicad-jlcpcb-tools/main/images/showcase.gif)
-
-## Keyboard shortcuts
-
-Windows can be closed with ctrl-w/ctrl-q/command-w/command-w (OS dependent) and escape.
-Pressing enter in the keyword text box will start a search.
-
-### Toggle BOM / CPL attributes
-
-You can easily toggle the `exclude from BOM` and `exclude from CPL` attributes of one or multiple footprints.
-
-### Select LCSC parts from the JLCPCB parts database
-
-Select one or multiple footprints, click select part. You can select parts with equal value and footprint using the Select alike button.
-In the upcoming modal dialog, search for parts, select the one of your choice and click select part.
-The LCSC number of your selection will then be assigned to the footprints.
-
-![Footprint selection](https://github.com/Bouni/kicad-jlcpcb-tools/raw/main/images/footprint_selection.png)
-
-### Generate fabrication data
-
-Generate all necessary assembly files for your board with a simple click.
-
-A new directory called `jlcpcb` is created, and in there, two separate folders are created, `gerber` and `production_files`.
-
-In the gerber folder all necessary `*.gbr` and `*.drl` files are generated and zipped into the `production_files` folder, ready for upload to JLCPCB.
-The zipfile is named `GERBER-<projectname>.zip`
-
-Also in the `production_files` folder, two files are generated, `BOM-<projectname>.csv` and `CPL-<projectname>.csv`.
-
-Footprints are included into the BOM and CPL files according to their `exclude from BOM` and `exclude from POS` attributes.
-
-Optional pre/post generation hook scripts can be configured in settings.
-
-- The pre-hook runs before generation and can block generation on failure (with Continue/Cancel prompt).
-- The post-hook runs only after successful generation.
-
-See [HOOKS.md](HOOKS.md) for configuration details and available environment variables.
-
-![The fabrication files](https://github.com/Bouni/kicad-jlcpcb-tools/raw/main/images/fabrication_files.png)
-
-### Export Additional JLC Specific Layers
-
-Some boards you have manufactured will require additional layers in your Gerber. For example, when manufacturing flex PCBs with a stiffener, JLC requires a layer outlining the stiffener layer (top/bottom), dimensions and the stiffener material properties (material, thickness etc). Export these additional JLC specific layers in your production files with a simple modification.
-
-Additional layers can be exported by creating layers with `JLC_` as the prefix of the layer name. You can access and edit the layer names in *Board Setup/Board Stackup/Board Editor Layers*
-
-This tool will automatically export all additional layers with the JLC_ prefix and add them to the production files in `GERBER-<projectname>.zip`
-
-![Export Additional JLC Specific Layers](https://github.com/Bouni/kicad-jlcpcb-tools/raw/main/images/additional_jlc_layers.png)
-
-## Footprint rotation correction
-
-JLCPCB seems to need corrected rotation information. @matthewlai implemented that in his [JLCKicadTools](https://github.com/matthewlai/JLCKicadTools) and I adopted his work in this plugin as well.
-You can download Matthews file from GitHub and manage your own corrections in the Rotation manager.
-
-## Icons
-
-This plugin makes use of a lot of icons from the excellent [Material Design Icons](https://materialdesignicons.com/)
-
-## Development
-
-1. Fork repo
-2. Git clone forked repo
-3. Install pre-commit `pip install pre-commit`
-4. Setup pre-commit `pre-commit run`
-5. Create feature branch `git switch -c my-awesome-feature`
-6. Make your changes
-7. Commit your changes `git commit -m "Awesome new feature"`
-8. Push to GitHub `git push`
-9. Create PR
-
-Make sure you make use of pre-commit hooks in order to format everything nicely with `black`
-In the near future I'll add `ruff` / `pylint` and possibly other pre-commit-hooks that enforce nice and clean code style.
-
-## How to rebuild the parts database
-
-The parts database is rebuilt by the [update_parts_database.yml GitHub workflow](https://github.com/Bouni/kicad-jlcpcb-tools/blob/main/.github/workflows/update_parts_database.yml)
-
-You can reference the steps in the 'Update database' section for the commands to run locally.
-
-## python libraries
-
-lib/ contains the necessary python packages that may not be a part of the KiCad python distribution.
-
-These packages include:
-
-- packaging
-
-To install a package, such as 'packaging':
-
-```python
-pip install packaging --target ./lib
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-To update these packages:
+The installer locates KiCad's plugin directory itself
+(`~/Documents/KiCad/<ver>/scripting/plugins` on macOS and Windows,
+`$XDG_DATA_HOME/kicad/<ver>/scripting/plugins` on Linux) and links this
+checkout in as `kicad_lcsc_suite`. Because it links rather than copies,
+**`git pull` updates the installed plugin on every machine — no reinstall.**
 
-```python
-pip install packaging --upgrade --target ./lib
+### 3. Restart KiCad
+
+Then: **PCB editor → Tools → External Plugins → LCSC Suite**.
+
+Named "LCSC Suite" so it can sit alongside an upstream "JLCPCB Tools"
+install without producing two identical toolbar entries.
+
+### 4. Confirm it works (optional)
+
+```bash
+./install.sh --list     # where each half is linked, and whether it is ours
 ```
 
-Future versions of KiCad may have support for a requires.txt to automate this process.
+### Manual install (no git)
 
-## Standalone mode
+Copy the **`kicad_lcsc_suite/` directory** (not the repository root) into
+KiCad's `scripting/plugins` folder, keeping its name, then restart KiCad. The
+name has to stay a valid Python identifier — underscores, not hyphens — because
+it is what KiCad imports the package as.
 
-Allows the plugin UI to be started without KiCAD, enabling debugging with an IDE like pycharm / vscode.
+### Troubleshooting
 
-Standalone mode is under development.
+| Symptom | Cause |
+|---|---|
+| Plugin missing from the menu | Directory name contains hyphens, or KiCad was not restarted |
+| Previews blank, rest works | wxPython built without `wx.svg` |
+| Stock shows `?` | No CA trust store — set `LCSC_CA_BUNDLE` to a CA bundle |
+| Retail column stuck on `…` | LCSC detail endpoint unreachable or rate-limiting; **Refresh** to retry |
+| No product photo | Not every part has one; photos are best-effort and never block the rest |
+| Imported library not in the symbol chooser | KiCad caches lib-tables at startup; restart it |
+| Explorer window opens empty | Should now report the error instead — check the main window's log panel and file it |
 
-### Limitations
+## Using it
 
-- All board / footprint / value data are hardcoded stubs, see standalone_impl.py
+**LCSC Explorer** (magnifier icon, or seeded from the current footprint
+selection):
 
-### How to use
+1. Type a keyword (`22k 0805 0.1%`), an MPN, or an LCSC id (`C374726`).
+2. Pick an **Inventory** — JLC assembly or LCSC retail, whichever you are
+   ordering from. Narrow with the parametric dropdowns, tick **in stock only**
+   to drop unbuyable parts, and **Sort** by stock or price.
+3. Select a row — the availability cards fill first, then the symbol and
+   footprint drawings, then the product photo. Nothing waits on the photo.
+4. **Import symbol + footprint + 3D** writes the part into your library;
+   **Assign LCSC number** tags the selected footprints; **Import + assign**
+   does both.
 
-To use the plugin in standlone mode you'll need to identify three pieces of information specific to your Kicad version, plugin path, and OS.
+**Import libs** (toolbar) batch-imports symbol/footprint/3D for *every* LCSC
+number already assigned on the board — useful when picking the project up on
+the other machine.
 
-#### Python
+**Import symbol/fp** in the original part selector does the same for one part.
 
-The <i><b>{KiCad python}</b></i> should be used, this can be found at different locations depending on your system:
+## Board ↔ schematic, in whichever direction you ask for
 
-| OS     | Kicad python                                                                                |
-|--------|---------------------------------------------------------------------------------------------|
-|Mac     | /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/3.9/bin/python3 |
-|Linux   | /usr/bin/python3                                                                            |
-|Windows | C:\Program Files\KiCad\8.0\bin\python.exe                                                   |
+Assigning tags the **footprint**. On its own that leaves the Symbol Fields
+Table empty, the schematic BOM without part numbers, and the assignment at the
+mercy of the next *Update PCB from Schematic*, which pushes the symbol's empty
+LCSC field over it. The reverse happens just as often: a schematic that
+already has every LCSC field filled in, opened here, looks completely
+unassigned because nothing ever put those numbers on the footprints.
 
-#### Working directory
+Two toolbar buttons, and **nothing happens without pressing one**:
 
-The <i><b>{working directory}</b></i> should be your plugins directory, ie:
+| Button | Direction | What it touches |
+|---|---|---|
+| **From schematic** | symbols → footprints | the board in memory (save the PCB afterwards) |
+| **To schematic** | footprints → symbols | the project's `.kicad_sch` files |
 
-| OS     | Working dir                                                |
-|--------|------------------------------------------------------------|
-|Mac     | ~/Documents/KiCad/<version>/scripting/plugins/             |
-|Linux   | ~/.local/share/kicad/<version>/scripting/plugins/          |
-|Windows | %USERPROFILE%\Documents\KiCad\<version>\scripting\plugins\ |
+Both show you exactly what they are about to overwrite — reference by
+reference, old number → new number — and do nothing until you confirm. They
+are also genuinely destructive in the direction you pick: the two sides are
+never merged, the one you choose wins.
 
-> [!NOTE]  
-> <version> can be 7.0, 8.0, or X.YY depending on the version you use
+What each deliberately will not do:
 
-#### Plugin folder name
+- **Touch a schematic that is open in the Schematic Editor.** The editor holds
+  its own copy in memory and would overwrite anything written underneath it,
+  so *To schematic* says so and stops. Close the Schematic Editor and the
+  numbers go in — reopen it and the Symbol Fields Table has them. *From
+  schematic* still works while it is open, but reads the file on disk, so it
+  warns that unsaved edits are not included.
+- **Clear a number it was not asked to clear.** Going out, only parts you
+  explicitly removed are blanked; a symbol carrying a number the board has not
+  caught up with keeps it. Coming in, a symbol with no number leaves the
+  footprint alone.
+- **Rewrite a file with nothing to change.** Sheets that already match are left
+  untouched; a sheet that is rewritten leaves the previous version beside it as
+  `<name>.kicad_sch_old`.
 
-The <i><b>{kicad-jlcpcb-tools folder name}</b></i> should be the name of the kicad-jlcpcb-tools folder.
+Hierarchical sheets are followed in both directions, from the root sheet down
+through every `Sheetfile`.
 
-- For Kicad managed plugins this may be like
+## Where imported parts land
 
-> com_github_bouni_kicad-jlcpcb-tools
+A library triplet, project-local by default so the design stays portable:
 
-- If you are developing kicad-jlcpcb-tools this is the folder you cloned the kicad-jlcpcb-tools as.
-
-#### Command line
-
-- Change to the working directory as noted above
-- Run the python interpreter with the <i><b>{kicad-jlcpcb-tools folder name}</b></i> folder as a module.
-
-For example:
-
-```sh
-cd {working directory}
-{kicad_python} -m {kicad-jlcpcb-tools folder name}
+```
+<board dir>/lcsc-lib/LCSC.kicad_sym      symbols
+<board dir>/lcsc-lib/LCSC.pretty/        footprints
+<board dir>/lcsc-lib/LCSC.3dshapes/      3D models (.wrl + .step)
 ```
 
-For example on Mac:
+The plugin registers this in the project's `sym-lib-table` and `fp-lib-table`
+using `${KIPRJMOD}`, backing up any table it modifies to
+`*.lcsc-suite.bak`. Point **Import into:** outside the project directory and
+it registers globally with an absolute path instead.
 
-```sh
-/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/3.9/bin/python3 -m kicad-jlcpcb-tools
+**KiCad caches library tables at startup** — restart KiCad if a freshly
+imported library does not show up in the symbol chooser.
+
+## Limitations
+
+- Not every LCSC part has an EasyEDA drawing; those import as "no CAD data".
+  Nothing is fabricated to fill the gap.
+- Converted footprints are only as good as EasyEDA's source data. **Check the
+  footprint against the datasheet before committing to a board** — this is a
+  convenience importer, not a verified library.
+- Bulk parametric filtering covers the fetched page, not all of LCSC.
+- Schematic sync is text surgery on `.kicad_sch` files, not an API call —
+  KiCad's IPC API does not reach the schematic. It writes nothing while the
+  Schematic Editor has the file open.
+- Stock and price come from unofficial endpoints that can change or rate-limit
+  without notice. Failures degrade to "?" rather than crashing.
+
+## Layout
+
+The UI is being rewritten out-of-process in PySide6 (see
+[docs/QT_MIGRATION_PLAN.md](docs/QT_MIGRATION_PLAN.md)), so there are two
+application packages side by side. They do not collide — each is a separate
+entry point, and `./install.sh --list` shows both.
+
+```text
+kicad_lcsc_suite/      the wx plugin KiCad loads, on its bundled Python 3.9
+  lcsc/api.py            JLC assembly + LCSC retail + JLC search; StockReport
+  lcsc/importer.py       EasyEDA -> KiCad library; lib-table registration
+  lcsc/explorer.py       the LCSC Explorer dialog
+  lcsc/previewpanel.py   symbol/footprint (wx.svg) and photo preview tiles
+  lcsc/theme.py          light/dark aware status and inventory colours
+  store.py library.py    the SQLite layers, shared with the Qt app
+  icons/                 the icon set, shared with the Qt app
+  lib/easyeda2kicad/     vendored, zero-dependency converter
+
+lcsc_suite/            the new PySide6 app, own venv, Python 3.12+
+  kicad_bridge.py        the KiCad 10 IPC API, with its traps wrapped
+  shared.py              the only sanctioned way in to the modules above
+  ui/                    Qt widgets, Fusion style
+
+kicad_plugin/          IPC manifest + launcher for the Qt app
+db_build/              the parts-database GitHub Action, and its common/ library
+scripts/               gui_probe.py (wx) and qt_probe.py (Qt) screenshot harnesses
+tests/                 every test, for both halves
+install.sh / .ps1      symlink/junction installer
+UPSTREAM.txt           pinned upstream commits
 ```
 
-For example on Linux:
+The wx half is Python 3.9 (what KiCad bundles) and uses only `wx`, `certifi`
+and the standard library; the Qt half brings its own interpreter and PySide6.
+`AGENTS.md` and `CLAUDE.md` carry the contributor rules for both.
 
-```sh
-cd ~/.local/share/kicad/8.0/scripting/plugins/ && python -m kicad-jlcpcb-tools
-```
+## Licensing — read before making this public
 
-For example on Windows:
+This repository combines two upstreams under **different** licenses:
 
-```cmd
-& 'C:\Program Files\KiCad\8.0\bin\python.exe' -m kicad-jlcpcb-tools
-```
+| Component | Upstream | License |
+|---|---|---|
+| Plugin base (`kicad_lcsc_suite/mainwindow.py`, `fabrication.py`, `store.py`, …) | [Bouni/kicad-jlcpcb-tools][bouni] | MIT (`LICENSE`) |
+| `kicad_lcsc_suite/lib/easyeda2kicad/` (vendored) | [uPesy/easyeda2kicad.py][e2k] | **AGPL-3.0** (its own `LICENSE`) |
+| `kicad_lcsc_suite/lcsc/`, `lcsc_suite/`, installers | this repo | see below |
 
-#### IDE
+The AGPL is the binding constraint. **While this repository stays private
+and you only run the plugin yourself, nothing is triggered** — the AGPL's
+obligations attach to *distribution* and to *network-service* use, neither
+of which applies to personal use of a private checkout.
 
-- Configure the command line to be '{kicad_python} -m {kicad-jlcpcb-tools folder name}'
-- Set the working directory to {working directory}
+If you ever make this repo public, publish a release, or let others use it
+over a network, the combined work must be offered under **AGPL-3.0**, with
+complete corresponding source. Two ways to stay clean:
 
-If using PyCharm or Jetbrains IDEs, set the interpreter to Kicad's python, <i><b>{Kicad python}</b></i> and under 'run configuration' select Python.
+1. **Relicense the whole thing AGPL-3.0** — simplest, and compatible, since
+   MIT code can be included in an AGPL work.
+2. **Un-vendor easyeda2kicad** — drop `kicad_lcsc_suite/lib/easyeda2kicad/`,
+   make it a pip dependency the user installs, and keep this repo MIT. Removes
+   the "no dependencies to install" property.
 
-Click on 'script path' and change instead to 'module name',
-entering the name of the kicad-jlcpcb-tools folder, <i><b>{kicad-jlcpcb-tools folder name}</b></i>.
+Upstream commit pins are in `UPSTREAM.txt`. Both upstream licenses are kept
+in the tree; do not delete them.
 
-## How to release new versions of this plugin
+## Credits
 
-[bouni-kicad-repository](https://raw.githubusercontent.com/Bouni/bouni-kicad-repository/main/repository.json) contains the
-files for the latest version of the plugin, in the format KiCAD expects from external plugins.
+The plugin this forks from is **[kicad-jlcpcb-tools][bouni] by Bouni**, which
+is where the BOM/CPL writers, the corrections subsystem, the project database
+and the parts-database build pipeline all came from. If this is useful to you,
+[the original author takes sponsorship](https://github.com/sponsors/Bouni).
 
-To release a new version of this plugin:
+- The EasyEDA→KiCad converter is [uPesy/easyeda2kicad.py][e2k], vendored.
+- Footprint rotation corrections originate in
+  [matthewlai/JLCKicadTools](https://github.com/matthewlai/JLCKicadTools).
+- The icon set is [Material Design Icons](https://materialdesignicons.com/).
 
-1. In the <b>kicad-jlcpcb-plugin</b> repository:
-   1. Visit the releases page ![Release step 1](https://github.com/Bouni/kicad-jlcpcb-tools/raw/main/images/release_step_1.png)
-   1. Click on 'Choose a tag', enter the next release number, say 2025.04.01 for example, and click on 'Create Tag' ![Release step 2](https://github.com/Bouni/kicad-jlcpcb-tools/raw/main/images/release_step_2.png)
-   1. Click 'Generate release notes' ![Release step 3](https://github.com/Bouni/kicad-jlcpcb-tools/raw/main/images/release_step_3.png)
-   1. If the release notes looks good, click on 'Publish release' ![Release step 4](https://github.com/Bouni/kicad-jlcpcb-tools/raw/main/images/release_step_4.png)
-1. Automatically the new release will trigger the 'kicad-pcm' workflow which will:
-   1. Pull the latest plugin tag
-   1. Create the appropriate pcm archive
-   1. Upload the zip as an asset to a new GitHub release
-   1. benc-uk/workflow-dispatch@v1 is used to trigger the 'Rebuild repository' workflow in [bouni-kicad-repository](https://github.com/Bouni/bouni-kicad-repository)
-1. Automatically in the <b>bouni-kicad-repository</b>, the 'Rebuild repository' (rebuild.yml) workflow runs 'generate.py'
-   1. generate.py updates .json and the latest .zip file using the release assets from the kicad-jlcpcb-plugin repository
-1. The plugin should now be visible to users via the plugin manager.
+Upstream's own README covers features this fork has dropped or replaced —
+Gerber and drill output most of all, which is
+[deliberately out of scope](docs/QT_MIGRATION_PLAN.md).

@@ -1,14 +1,8 @@
-"""Import the toolkit-free logic modules that still live at the repo root.
+"""Import the toolkit-free logic modules the wx plugin and this app both use.
 
-The repository root *is* a Python package — but its directory name has
-hyphens, so it cannot be imported by name, and its modules use relative
-imports (``from .helpers import ...``) that only resolve inside a package. The
-legacy wx plugin gets around this because ``install.sh`` symlinks the checkout
-into KiCad's plugin directory under the importable name ``kicad_lcsc_suite``.
-
-The Qt app cannot rely on that symlink existing (Phase 8 removes it), so it
-registers the same alias itself, from the checkout, using importlib. This is
-the identical trick ``scripts/gui_probe.py`` uses.
+Those modules live in ``kicad_lcsc_suite/`` — the legacy plugin's package, which
+KiCad loads directly and which the Qt app borrows from until the Phase 8 cutover
+promotes the survivors into this package.
 
 Import *through this module*, never by poking at ``sys.path``:
 
@@ -18,58 +12,38 @@ Import *through this module*, never by poking at ``sys.path``:
 Everything reachable from here is documented in the migration plan's §3 as
 "ported nearly unchanged". In particular ``lcsc/api.py`` is **copied, not
 edited** — if a UI need seems to require an API change, change the UI.
+
+This used to take thirty lines of ``importlib`` machinery, because the plugin
+*was* the repository root and a directory named ``kicad-lcsc-suite`` cannot be
+imported. Giving it a real package directory reduced the whole problem to the
+``sys.path`` entry below.
 """
 
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import os
 import sys
 from types import ModuleType
 
-#: Repository root — the directory the legacy package lives in.
+#: Repository root — the directory both packages live in.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-#: The importable alias the root package's relative imports need.
+#: The legacy plugin's package name, and its directory name under the root.
 LEGACY_PACKAGE = "kicad_lcsc_suite"
 
+#: The legacy package's directory. Its *data* lives here too — the icon set and
+#: the wx plugin's settings file — so anything reaching for those must join onto
+#: this, never onto :data:`REPO_ROOT`. Phase 8 moves the survivors into this
+#: package and this constant goes away with the rest of the legacy half.
+LEGACY_ROOT = os.path.join(REPO_ROOT, LEGACY_PACKAGE)
 
-def _register_legacy_package() -> ModuleType:
-    """Make ``kicad_lcsc_suite`` importable from this checkout."""
-    existing = sys.modules.get(LEGACY_PACKAGE)
-    if existing is not None:
-        return existing
-
-    # Already importable (the wx plugin's symlink is on sys.path)? Prefer that,
-    # so a developer running both halves does not end up with two copies of the
-    # same modules loaded under different identities.
-    try:
-        return importlib.import_module(LEGACY_PACKAGE)
-    except ImportError:
-        pass
-
-    spec = importlib.util.spec_from_file_location(
-        LEGACY_PACKAGE,
-        os.path.join(REPO_ROOT, "__init__.py"),
-        submodule_search_locations=[REPO_ROOT],
-    )
-    if spec is None or spec.loader is None:  # pragma: no cover - checkout is broken
-        raise ImportError(f"cannot locate the legacy package at {REPO_ROOT}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[LEGACY_PACKAGE] = module
-    # The root ``__init__`` appends ``lib/`` (the vendored easyeda2kicad) to
-    # sys.path and swallows the wx/pcbnew import it then attempts, so this is
-    # safe outside KiCad.
-    spec.loader.exec_module(module)
-    return module
-
-
-_legacy = _register_legacy_package()
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 
 def legacy(name: str) -> ModuleType:
-    """Import ``name`` from the legacy root package."""
+    """Import ``name`` from the legacy package."""
     return importlib.import_module(f"{LEGACY_PACKAGE}.{name}")
 
 
@@ -77,6 +51,10 @@ def legacy(name: str) -> ModuleType:
 #
 # Grouped by the plan's §3 table so it stays obvious what is shared and what
 # was rewritten. Anything imported here must be free of wx *and* of pcbnew.
+#
+# Importing the package runs its ``__init__``, which appends the vendored
+# ``lib/`` to sys.path and swallows the wx/pcbnew import it then attempts. That
+# is what makes this safe outside KiCad.
 
 derive_params = legacy("derive_params")
 dblib = legacy("dblib")
@@ -96,6 +74,7 @@ enrichment_providers = legacy("enrichment.providers")
 
 __all__ = [
     "LEGACY_PACKAGE",
+    "LEGACY_ROOT",
     "REPO_ROOT",
     "bom_help_text",
     "bom_pricing",

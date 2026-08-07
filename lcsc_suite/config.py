@@ -203,7 +203,11 @@ class Settings:
 
 
 def legacy_settings_path() -> str:
-    """Where the wx plugin keeps its settings, for the one-time import."""
-    from .shared import REPO_ROOT
+    """Where the wx plugin keeps its settings, for the one-time import.
 
-    return os.path.join(REPO_ROOT, SETTINGS_FILENAME)
+    Inside the legacy package, because that is what ``settings.py`` resolves its
+    ``PLUGIN_PATH`` to — the directory the plugin is installed as.
+    """
+    from .shared import LEGACY_ROOT
+
+    return os.path.join(LEGACY_ROOT, SETTINGS_FILENAME)

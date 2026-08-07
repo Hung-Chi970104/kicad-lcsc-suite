@@ -27,19 +27,13 @@ rm -rf "$ARCHIVE_DIR"
 echo "Create folder structure for ZIP"
 mkdir -p "$PLUGINS_DIR" "$RESOURCES_DIR"
 
-echo "Copy top-level files"
-for file in VERSION settings.json ./*.py ./*.png; do
-	[ -e "$file" ] || continue
-	cp "$file" "$PLUGINS_DIR"
-done
+# The whole plugin is one directory now, so this is a single copy rather than
+# the file-and-directory enumeration it used to be — a list that silently
+# shipped a broken plugin whenever a new module was added and not added here.
+echo "Copy the plugin package"
+cp -R kicad_lcsc_suite/. "$PLUGINS_DIR"
 
-echo "Copy directories"
-for dir in icons lib common dblib core scripts bom_estimation enrichment; do
-	cp -R "$dir" "$PLUGINS_DIR"
-done
-
-echo "Prune tests and caches from packaged plugin"
-find "$PLUGINS_DIR/common" "$PLUGINS_DIR/dblib" "$PLUGINS_DIR/core" -type f \( -name 'test_*.py' -o -name 'pytest.ini' \) -delete
+echo "Prune caches from packaged plugin"
 find "$PLUGINS_DIR" -type d -name '__pycache__' -prune -exec rm -rf {} +
 find "$PLUGINS_DIR" -type f -name '*.pyc' -delete
 

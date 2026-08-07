@@ -1,6 +1,6 @@
 """Tests for shared BOM estimator help text."""
 
-from bom_estimation.help_text import (  # pylint: disable=import-error
+from kicad_lcsc_suite.bom_estimation.help_text import (  # pylint: disable=import-error
     BOM_ESTIMATOR_HELP_TITLE,
     get_bom_estimator_help_text,
 )

@@ -1,14 +1,14 @@
 """Tests for the dblibrary module."""
 
-from pathlib import Path
 import re
-import sys
 import time
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from dblib import DEFAULT_LIBRARY, LIBRARY_CONFIGS, DatabaseConfig, PartDatabaseConfig
+from kicad_lcsc_suite.dblib import (
+    DEFAULT_LIBRARY,
+    LIBRARY_CONFIGS,
+    DatabaseConfig,
+    PartDatabaseConfig,
+)
 
 # ============================================================================
 # PartDatabaseConfig Tests

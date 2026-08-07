@@ -1,6 +1,6 @@
 """Tests for provider-backed enrichment helpers."""
 
-from enrichment.providers import (  # pylint: disable=import-error
+from kicad_lcsc_suite.enrichment.providers import (  # pylint: disable=import-error
     LCSCAssemblyMetadataProvider,
     fetch_assembly_processes,
 )

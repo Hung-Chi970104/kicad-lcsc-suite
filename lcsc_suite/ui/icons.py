@@ -19,16 +19,27 @@ Two things the wx version had to do by hand are gone:
 from __future__ import annotations
 
 from functools import lru_cache
+import logging
 import os
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QImage, QPixmap
 
-from ..shared import REPO_ROOT
+from ..shared import LEGACY_ROOT
 from . import theme
 
-#: The icon set the wx plugin already ships, reused as-is.
-ICON_DIR = os.path.join(REPO_ROOT, "icons")
+log = logging.getLogger(__name__)
+
+#: The icon set the wx plugin already ships, reused as-is. It lives inside the
+#: legacy package because that package is what gets installed into KiCad.
+ICON_DIR = os.path.join(LEGACY_ROOT, "icons")
+
+if not os.path.isdir(ICON_DIR):
+    # One missing icon is a typo and is tolerated below. The whole directory
+    # missing means the path is wrong, and every toolbar button silently loses
+    # its image — a change that reads as a deliberate restyling in a screenshot
+    # rather than as a bug. Say so once, loudly.
+    log.error("Icon directory %s does not exist; toolbars will have no icons", ICON_DIR)
 
 #: Toolbar icon size in logical pixels. The source art's natural size.
 ICON_SIZE = QSize(24, 24)

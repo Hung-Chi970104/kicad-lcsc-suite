@@ -19,6 +19,9 @@ on:
   push:
     paths:
       - "lcsc_suite/**"
+      # The Qt app reads the icon set and the shared logic modules out of the
+      # legacy package, so a change there can alter what renders.
+      - "kicad_lcsc_suite/**"
       - "scripts/qt_probe.py"
       - "docs/screens/**"
       - ".github/workflows/qt-screens.yml"

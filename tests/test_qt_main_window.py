@@ -37,6 +37,7 @@ from lcsc_suite import (
 )
 from lcsc_suite.config import Settings  # noqa: E402
 from lcsc_suite.single_instance import SingleInstance, _socket_name  # noqa: E402
+from lcsc_suite.ui import icons  # noqa: E402
 from lcsc_suite.ui.main_window import COLUMNS, DEFAULT_SIZE, MainWindow  # noqa: E402
 
 FIXTURE = (
@@ -167,6 +168,26 @@ def test_every_part_button_fits_without_an_extension_arrow(window):
     assert len(buttons) == 10
     hidden = [button.text() for button in buttons if not button.isVisible()]
     assert hidden == []
+
+
+def test_every_toolbar_button_has_its_icon(window):
+    """No button may render as a bare label.
+
+    The icon set lives in the legacy package's directory, so a path that stops
+    resolving is a real possibility whenever the layout moves. ``icons.icon()``
+    returns an empty ``QIcon`` for anything it cannot load rather than raising —
+    right for a single typo, but it means a wrong *directory* silently strips
+    every icon in the window, and the resulting screenshot reads as a restyling
+    rather than as a bug. It happened exactly once; this is why not twice.
+    """
+    assert os.path.isdir(icons.ICON_DIR), f"icon directory missing: {icons.ICON_DIR}"
+    bare = [
+        action.text()
+        for bar in (window.main_toolbar, window.part_toolbar)
+        for action in bar.actions()
+        if action.text() and action.icon().isNull()
+    ]
+    assert bare == []
 
 
 def test_estimator_row(window):

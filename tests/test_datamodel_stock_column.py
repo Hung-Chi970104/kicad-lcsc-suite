@@ -13,28 +13,37 @@ attribute by attribute rather than replacing an existing ``wx`` module,
 because another test file in this suite installs its own bare one.
 """
 
-import importlib
-from pathlib import Path
 import sys
 import types
 
-_ROOT = Path(__file__).parent.parent
+
+class _StubModule(types.ModuleType):
+    """A wx-shaped module that answers to anything asked of it.
+
+    ``datamodel`` pulls in ``dataview_highlight``, which reads sizer and
+    alignment constants (``wx.ALIGN_LEFT`` and friends) at class-definition
+    time. Enumerating them by hand means this file only imports when some
+    *other* test module happens to have installed a broader stub first, which
+    is not a dependency worth having. Constants come back as ints because they
+    get combined with ``|``; everything else as a class, because it gets
+    subclassed.
+    """
+
+    def __getattr__(self, name):
+        value = 0 if name.isupper() else type(name, (), {})
+        setattr(self, name, value)
+        return value
 
 
 def _stub_wx() -> None:
-    """Install just enough of wx for `datamodel` to import."""
-    wx = sys.modules.get("wx") or types.ModuleType("wx")
-    dataview = sys.modules.get("wx.dataview") or types.ModuleType("wx.dataview")
-    for name in ("Colour", "Bitmap"):
-        if not hasattr(wx, name):
-            setattr(wx, name, type(name, (), {}))
-    for name in (
-        "PyDataViewModel",
-        "DataViewCustomRenderer",
-        "DataViewIconText",
-    ):
-        if not hasattr(dataview, name):
-            setattr(dataview, name, type(name, (), {}))
+    """Install just enough of wx for `datamodel` to import.
+
+    Only fills the gaps in whatever is already there: another test module may
+    have installed its own ``wx``, and replacing it would strip the attributes
+    that one configured.
+    """
+    wx = sys.modules.get("wx") or _StubModule("wx")
+    dataview = sys.modules.get("wx.dataview") or _StubModule("wx.dataview")
     if not hasattr(dataview, "NullDataViewItem"):
         dataview.NullDataViewItem = object()
     wx.dataview = dataview
@@ -44,16 +53,7 @@ def _stub_wx() -> None:
 
 _stub_wx()
 
-_pkg_name = "kicadplugin"
-if _pkg_name not in sys.modules:
-    _pkg = types.ModuleType(_pkg_name)
-    _pkg.__path__ = [str(_ROOT)]
-    sys.modules[_pkg_name] = _pkg
-
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-stock_text = importlib.import_module(f"{_pkg_name}.datamodel").stock_text
+from kicad_lcsc_suite.datamodel import stock_text  # noqa: E402
 
 
 def test_an_integer_stock_figure_becomes_text():

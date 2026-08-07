@@ -4,7 +4,7 @@
 
 import sqlite3
 
-from search_escape import (
+from kicad_lcsc_suite.search_escape import (
     escape_fts_phrase as _escape_fts_phrase,
     escape_like_term as _escape_like_term,
 )

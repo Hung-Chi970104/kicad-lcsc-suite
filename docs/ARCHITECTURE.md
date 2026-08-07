@@ -8,18 +8,22 @@ test it).
 
 ## 1. The shape of the thing
 
-This is a **KiCad action plugin**: a Python package that KiCad imports at
-startup and that puts one button on the PCB editor toolbar. There is no
-server, no build artifact, and no installed copy — `install.sh` symlinks the
-checkout into KiCad's plugin directory, so the working tree *is* the running
-plugin.
+This is a **KiCad plugin**, described here as it stands today: an in-process wx
+action plugin, alongside the out-of-process PySide6 app that is replacing it
+(see [QT_MIGRATION_PLAN.md](QT_MIGRATION_PLAN.md)). There is no server, no build
+artifact and no installed copy — `install.sh` symlinks the two package
+directories into KiCad's plugin directories, so the working tree *is* what runs.
 
 ```text
 KiCad (pcbnew)
   └── imports kicad_lcsc_suite/__init__.py     -> adds lib/ to sys.path
         └── plugin.JLCPCBPlugin.register()      -> toolbar button "LCSC Suite"
-              └── Run() -> mainwindow.JLCPCBTools(None)   [the whole UI]
+              └── Run() -> mainwindow.JLCPCBTools(None)   [the whole wx UI]
 ```
+
+Registration is guarded on a **real** `pcbnew` being importable, because the
+same package is imported for its logic modules by the Qt app and by the tests,
+and neither should pull in the wx dialog tree to reach `store.py`.
 
 `Run()` fires on **every** toolbar click, so it first looks for a window that
 is already up (`find_open_main_window`, matched on the dialog's wx name) and
@@ -50,6 +54,8 @@ Everything else is a dialog launched from it (`settings.py`,
 
 The fork has a clear seam, and it matters for how you approach a change.
 
+Everything below lives under `kicad_lcsc_suite/` unless stated otherwise.
+
 **Upstream (`Bouni/kicad-jlcpcb-tools`)** — the board-centric half.
 `mainwindow.py`, `store.py`, `library.py`, `fabrication.py`, `datamodel.py`,
 `settings.py`, `corrections.py`, `partmapper.py`, `partdetails.py`,
@@ -61,9 +67,14 @@ via `UPSTREAM.txt` and gratuitous rewrites make future merges expensive.
 docstring-heavy, stdlib-only, defensive about threads and teardown. New
 feature work generally belongs here.
 
-`common/`, `db_build/`, `dblib/`, `bom_estimation/`, `enrichment/` are the
-database-tooling and pure-logic packages, largely UI-free and where most of
-the test suite lives.
+`dblib/`, `bom_estimation/`, `enrichment/` are the pure-logic packages, UI-free
+by design — which is what lets the Qt app import them unchanged through
+`lcsc_suite.shared`. The parts-database build tooling is `db_build/` (with its
+own `common/` library) at the repository root, and is not plugin code. Every
+test for any of it is in `tests/`.
+
+**The third half is `lcsc_suite/`** — the PySide6 app. It imports *from* the
+above and never the other way round.
 
 ## 3. Data sources — three, and they disagree
 
@@ -128,7 +139,7 @@ rows pending and says so in the status line. This is also why the
 every search, which is precisely the burst that earns the ban.
 
 **Which source owns which field** matters, and the overlaps are not
-interchangeable. [`lcsc/details.py`](../lcsc/details.py) resolves the part
+interchangeable. [`lcsc/details.py`](../kicad_lcsc_suite/lcsc/details.py) resolves the part
 list's Type/Stock/LCSC Params columns and the estimator's prices, taking:
 
 - **library type** from the *search* endpoint. The assembly endpoint spells it
@@ -190,12 +201,12 @@ below which there is nothing new to learn). Two constraints on that path:
 extra, not a condition to be repaired before the window can be used, and it no
 longer triggers an unrequested three-quarter-gigabyte download at start-up.
 
-**Parts DB variants** are declared in [`dblib/__init__.py`](../dblib/__init__.py)
+**Parts DB variants** are declared in [`dblib/__init__.py`](../kicad_lcsc_suite/dblib/__init__.py)
 (`DatabaseConfig`): `current-parts-fts5.db` (default, excludes parts unstocked
 >1 year), `parts-fts5.db` (all), `basic-parts-fts5.db`, and an empty one. The
 user picks one in Settings; `Library.refresh_library_config` re-resolves paths
 and re-runs `check_library`. Databases ship as split zip chunks and are
-reassembled by [`unzip_parts.py`](../unzip_parts.py).
+reassembled by [`unzip_parts.py`](../kicad_lcsc_suite/unzip_parts.py).
 
 **`Library.search` is gone.** It was upstream's FTS5 full-text search, and the
 LCSC Explorer's live API search replaced the part selector that called it. It
@@ -218,7 +229,7 @@ migration — users' boards carry these files.
 Every network or disk-heavy operation runs off the UI thread. Two marshalling
 mechanisms coexist; use the one the surrounding module uses.
 
-**Custom wx events** ([`events.py`](../events.py)) — upstream's mechanism,
+**Custom wx events** ([`events.py`](../kicad_lcsc_suite/events.py)) — upstream's mechanism,
 used by `library.py` (download/unzip progress) and `mainwindow.py`
 (enrichment). Worker calls `wx.PostEvent(self.parent, SomeEvent(...))`; the
 dialog binds a handler. `events.py` degrades to a dummy factory when wx is
@@ -231,7 +242,7 @@ Three rules for anything asynchronous:
 
 1. **Workers touch nothing shared.** No `store`, no `library`, no widgets.
    They compute and hand the result back. The enrichment worker's docstring
-   in [`mainwindow.py`](../mainwindow.py#L992) states this explicitly.
+   in [`mainwindow.py`](../kicad_lcsc_suite/mainwindow.py#L992) states this explicitly.
 2. **Every result carries a staleness token.** `LcscExplorerDialog` has
    `_search_token`, `_detail_token`, `_retail_token`, all bumped by
    `_cancel_pending()`; `mainwindow` has `assembly_enrichment_generation`.
@@ -249,7 +260,7 @@ sets a `_bom_recompute_scheduled` latch and defers one recompute through
 `wx.CallAfter`.
 
 Retail backfill is the most involved case
-([`explorer.py`](../lcsc/explorer.py#L985)): a bounded pool of 5 concurrent
+([`explorer.py`](../kicad_lcsc_suite/lcsc/explorer.py#L985)): a bounded pool of 5 concurrent
 fetches over the first 120 rows, each row painting as it arrives, with a
 reaper thread posting completion. Deliberately not a `ThreadPoolExecutor` —
 its workers are non-daemon and would keep KiCad alive on exit.
@@ -319,10 +330,10 @@ Two more layout facts, both learned the hard way:
   visible slice inside `inline_clip` instead of hiding when it no longer fits
   whole.
 - **HiDPI**: size everything through `HighResWxSize(window, size)` and
-  `GetScaleFactor` from [`helpers.py`](../helpers.py); icons through
+  `GetScaleFactor` from [`helpers.py`](../kicad_lcsc_suite/helpers.py); icons through
   `loadIconScaled`.
 
-**Colour** must come from [`lcsc/theme.py`](../lcsc/theme.py) —
+**Colour** must come from [`lcsc/theme.py`](../kicad_lcsc_suite/lcsc/theme.py) —
 `colour(name)`, `stock_colour(count)`, `card_background()`, `blend()`. KiCad
 follows the desktop light/dark appearance and a literal tuned on white is
 unreadable on dark. `helpers.isDarkAppearance()` is the underlying probe.
@@ -334,7 +345,7 @@ is broken, it just costs more. Those two shared `bad` once, which made a
 pricing note indistinguishable from a failure.
 
 **Multi-select filters** live in
-[`lcsc/facetfilter.py`](../lcsc/facetfilter.py): a `wx.ComboCtrl` whose popup
+[`lcsc/facetfilter.py`](../kicad_lcsc_suite/lcsc/facetfilter.py): a `wx.ComboCtrl` whose popup
 is a `wx.CheckListBox`. Two non-obvious constraints, both found by
 `scripts/gui_probe.py`:
 
@@ -379,7 +390,7 @@ and the pass never finishes.
 
 `ThumbCell` holds the LCSC *code*, not a bitmap: photos arrive long after rows
 do, and there is no valid "empty bitmap" to sit in while waiting. Clicking one
-opens [`lcsc/photoviewer.py`](../lcsc/photoviewer.py) on the 900px original,
+opens [`lcsc/photoviewer.py`](../kicad_lcsc_suite/lcsc/photoviewer.py) on the 900px original,
 with the part's other angles (`api.assembly_photo_urls`) behind the arrow
 keys. The viewer is modeless and reused — clicking a second thumbnail
 retargets the open window rather than stacking another.
