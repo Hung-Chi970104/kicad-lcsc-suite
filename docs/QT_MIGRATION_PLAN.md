@@ -1104,6 +1104,69 @@ Three things are already in place for it:
 
 - **The write path is proven over a real socket**, as of Phase 3. The Explorer's
   assign buttons need no new IPC work at all — call `assign_number()`.
+- **`lcsc/api.py` needs no new dependency.** Checked on the venv's Python 3.14:
+  it imports cleanly and uses only stdlib (`urllib`, `ssl`, `threading`) — no
+  `requests`. So does `lcsc_details` and `lcsc_importer`.
+
+#### Concerns to settle in Phase 4, recorded 2026-08-07
+
+Written down now because they were found while pre-flighting the phase, and each
+one is cheaper to decide before 2918 lines are ported than after.
+
+**1. The results grid needs a search-results fixture, like the part table has
+`fixtures/board.json`.** This is the load-bearing one — the whole phase's screen
+inventory depends on it.
+
+The reason is not that CI has no network: it plainly does, it installs PySide6
+over it. It is that **`.github/workflows/qt-screens.yml` asserts the committed
+PNGs match what renders**, and a grid built from live search results renders
+differently every run — the stock figures are the numbers most likely to move,
+and they are rendered in three columns. That gate would fail permanently. Three
+lesser reasons on top: LCSC 403s *whole networks* (§4) and GitHub's shared runner
+ranges are prime candidates; `_HostBreaker` opens a host for ten minutes after
+three hard failures, so a blocked run stays blocked for the rest of the job; and
+a test asserting on live stock asserts on a number whose disagreement across
+sources is the thing this fork exists to *show*, not to pin.
+
+Precedent to follow: Phase 2 gave `Library` an `allow_network` parameter,
+defaulting to `True` so the wx plugin is unchanged, and the Qt part list passes
+`False`. **The probe and the tests must never touch the wire.** Same shape here.
+
+**2. Capturing that fixture live is authorised** — granted 2026-08-07, in
+response to this concern. Do it early in Phase 4, while a request still
+succeeds, and:
+
+- capture **once**, to a file, and never on a loop. The user's standing note is
+  that `wmsc.lcsc.com` 403s this network always and EasyEDA bans it on bursts, so
+  a capture script that retries is the thing that costs the next session's
+  access;
+- capture the **raw** response, not a post-processed shape, so a later change to
+  how `api.py` parses it does not need a new capture;
+- capture a keyword with a wide result set and a full parametric spread —
+  `10nF 0402` is what §5.2's reference screenshots used, including its
+  `18326 parts match … showing the first 100` line;
+- capture the **thumbnails** too, or the grid's 108px rows have nothing in them.
+  One id per search row, from JLC's file service, per §5.2.
+
+Hand-building the fixture from `api.py`'s dataclasses is the fallback if the
+capture 403s, but it is strictly worse: a fixture invented from the shapes we
+*think* the API returns is exactly the mistake trap 4 punished — a stand-in more
+permissive than the thing it stands for.
+
+**3. `None` is not `0`, and the fixture has to preserve that.** A source
+answering nothing renders `?`; a part with no stock renders `0`. If the capture
+is serialised through something that coerces missing to zero, the fixture will
+quietly encode the one bug §4 says never to reintroduce.
+
+**4. The three-inventory distinction has to survive the fixture too.** JLC
+assembly, LCSC retail and the EasyEDA fallback are different warehouses.
+§5.2's Inventory selector collapses a column to width 0 rather than removing it,
+so the fixture needs rows where the two figures *disagree* — otherwise the
+selector looks like it does nothing.
+
+**5. Add an `explorer` screen to `qt_probe.py` with fresh `probe_settings()`,**
+and expect more than one: side-panel vs inline detail, and facets expanded vs
+collapsed, are different screens by §5.2 and CI covers whatever `SCREENS` names.
 
 **Re-run `scripts/live_ipc_check.py` whenever `kicad_bridge` is touched.** It
 exercises every write helper against a running KiCad, asserts by re-reading and
