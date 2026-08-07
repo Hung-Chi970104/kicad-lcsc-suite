@@ -70,9 +70,15 @@ PART_CACHE_FIELDS = (
 class Library:
     """A storage class to get data from a sqlite database and write it back."""
 
-    def __init__(self, parent):
+    def __init__(self, parent, allow_network=True):
         self.logger = logging.getLogger(__name__)
         self.parent = parent
+        #: Whether construction may reach the network. Only ``check_library``'s
+        #: one-off corrections seed does, and only on a machine that has never
+        #: had a global corrections database. The wx plugin always could, so
+        #: this defaults to the behaviour it has always had; the Qt app turns it
+        #: off until the phase that owns the Corrections dialog.
+        self.allow_network = allow_network
         self.datadir = ""
         self.selected_library = DEFAULT_LIBRARY
         self.partsdb_file = ""
@@ -156,6 +162,11 @@ class Library:
         absent parts DB is a missing offline catalogue, not a broken install —
         it must not block start-up or trigger a three-quarter-gigabyte download
         nobody asked for.
+
+        The one thing here that *can* reach the network is the corrections seed,
+        and only when no global corrections database exists yet. It is gated on
+        ``allow_network`` so a caller that has no business making requests — a
+        test, a screenshot probe — cannot silently make one.
         """
         self.has_bulk_database = (
             os.path.isfile(self.partsdb_file) and os.path.getsize(self.partsdb_file) > 0
@@ -166,7 +177,8 @@ class Library:
             self.create_correction_table()
             self.migrate_corrections()
             if (
-                corrections_file_missing
+                self.allow_network
+                and corrections_file_missing
                 and self.correctionsdb_file == self.globalcorrectionsdb_file
             ):
                 db_path = self.globalcorrectionsdb_file

@@ -669,11 +669,12 @@ Known limitation: `restoreGeometry` clamps to the screen, and the offscreen
 platform's virtual screen is 800x800, so the geometry test asserts height only.
 `resize` does not clamp, which is why screenshots still come out at 1300x772.
 
-### Phase 2 — Part table 🟡 mostly done
+### Phase 2 — Part table ✅
 
-The table is real: nine columns over `store.py`, row colouring, sorting,
-multi-select, the row context menu, and the BOM/POS toggles. The `Store` adapter
-question that Phase 1's note flagged is settled.
+The table is real: nine columns over `store.py`, all of them filled, row
+colouring, sorting, multi-select, the row context menu, the BOM/POS toggles and
+match highlighting. The `Store` adapter question that Phase 1's note flagged is
+settled.
 
 Landed:
 
@@ -688,7 +689,8 @@ Landed:
 - **`lcsc_suite/parts.py`** — `PartList`, the board↔database↔rows reconciler
   (the wx plugin does this inside `mainwindow.populate_footprint_list`).
   `_StoreOwner` adapts our `Settings` to the `parent.settings` mapping that
-  `store.py` and `library.py` reach into.
+  `store.py` and `library.py` reach into, plus the `project_path` and
+  `post_event` attributes `library.py` also reaches for.
 - **`store.py` gained a toolkit-free seam.** Rather than making `FootprintView`
   quack like a pcbnew footprint, `update_from_board()` is now a thin adapter that
   builds plain part records and calls the new **`update_from_parts(parts)`**,
@@ -697,7 +699,7 @@ Landed:
   `backfill_estimator_metadata(footprint, …)` → **`backfill_part_metadata(part,
   …)`**, and `clean_database(references=None)`. `Store(parent, path, board=None)`
   skips the board read, which is what the Qt app passes.
-  `common/test_store_pad_filter.py` still calls the pcbnew-facing spellings, and
+  `tests/test_store_pad_filter.py` still calls the pcbnew-facing spellings, and
   they still work.
 - **Sorting is a `QSortFilterProxyModel`**, not `store.set_order_by`'s SQL, so a
   header click cannot disagree with what the database returned.
@@ -710,40 +712,77 @@ Landed:
   reach one, and the row colouring is the thing most worth looking at. In it
   `G1`–`G3` and `JP1` are red and bold; the mounting holes are excluded from the
   BOM and deliberately *not* marked.
-- Tests: `tests/test_qt_part_table.py` (25) covers the `?`/`0` distinction in
-  both the cell and the sort, the red-vs-amber meanings, board-before-database
-  write ordering, and a trapped board leaving the database alone.
+- **`lcsc_suite/parts.py` opens the part libraries.** `open_library(owner)` builds
+  `library.Library` over the data directory the wx plugin already fills, so while
+  both halves are installed they share one part cache, one mappings table and one
+  corrections database. It returns `None` rather than raising — an unreadable
+  data directory costs three columns, which is not a reason for the window to
+  refuse to open — and `PartList.open_libraries()` is the app's call site.
+  `Library` gained one parameter for this: **`allow_network`**, defaulting to
+  `True` so the wx plugin's behaviour is unchanged, and passed `False` here. The
+  only thing construction can do over the wire is seed a global corrections
+  database that does not exist yet; that belongs to Phase 5, which owns the
+  Corrections dialog, not to a part list opening.
+- **Type / LCSC Params / JLC Stock now fill**, from the local cache only. Never
+  the network: `_details()` runs once per assigned part while the list is built
+  on the UI thread, and serving a stale row unconditionally is what makes an
+  offline session work. Refreshing is Phase 4's job.
+- **Match highlighting** — `lcsc_suite/ui/delegates.py`, a `QStyledItemDelegate`
+  on the LCSC Params column, plus `MATCH_TERMS_ROLE` on the model.
 
-**Still open in Phase 2** — pick these up first:
+  It is worth being clear about what this feature *is*, because the setting is
+  labelled "Highlight search matches" and there is no search box in this window.
+  The terms are the row's **own value and footprint**, so the highlight marks
+  where the derived LCSC parameters corroborate what the board declares: a
+  `100K` in an `R_0402_1005Metric` lights up `100kΩ` and `0402` inside
+  `100kΩ ±1% 0402`. **A row with nothing lit is one where the two disagree** —
+  visible in `mainwindow-unassigned.png`, where the `J1`–`J4` terminal blocks
+  highlight nothing at all.
+
+  `expand_value` / `expand_footprint` are **imported from
+  `dataview_highlight.py`, not reimplemented**: which spellings count as the same
+  thing (`390R` is `390Ω`, `10uF` is `10µF` is `10µ`, `R_0402_1005Metric` is
+  `0402`) has a long tail, and a missed equivalence shows up only as a cell that
+  never highlights. Only that module's wx renderer is left behind. The delegate
+  is a third the size of the wx original because none of what that file works
+  around exists in Qt.
+- **A new `match` colour**, deliberately not the `standard` amber. A
+  standard-mode trigger colours a whole row and means "this costs more"; a match
+  tints runs inside one cell and means "this corroborates". They co-occur, and
+  one colour for both would read as one meaning — the mistake red and amber made
+  once already.
+- Screens: `mainwindow.png` plus **`mainwindow-unassigned.png`**, a second view
+  scrolled to the first part that needs a number — the default view does not
+  reach one, and the row colouring is the thing most worth looking at. In it
+  `G1`–`G3` and `JP1` are red and bold; the mounting holes are excluded from the
+  BOM and deliberately *not* marked. `R3` carries a number but no cached details,
+  so it shows `?` next to real figures — the two states in one picture.
+- Tests: `tests/test_qt_part_table.py` (40) covers the `?`/`0` distinction in
+  both the cell and the sort, the red-vs-amber meanings, board-before-database
+  write ordering, a trapped board leaving the database alone, the three columns
+  filling from a seeded cache, and the highlight terms and spans.
+
+**Still open, and each blocked on a later phase** — none of these is work that
+can be finished here:
 
 1. **The context menu is wired but inert.** `MainWindow._on_context_menu` emits
    `row_menu_triggered(entry_id, references)` for the ids in
    `main_window.ROW_MENU`; nothing is connected to it yet. Copy/Paste LCSC are
-   Phase 3 work (they need the assignment path); the three "Add correction …"
-   entries and the two mapping entries need Phase 5's dialogs. Deciding *where*
-   the dispatch lives is the open design question — probably a controller object
-   that owns `PartList`, the window and the dialogs, rather than the window
-   growing handlers.
-2. **`Library` is never constructed**, so `PartList._details()` returns `{}` and
-   the Type / LCSC Params columns are empty, and JLC Stock reads `?` for every
-   assigned part. `Library(parent)` wants the same `parent.settings` shape
-   `_StoreOwner` already provides, and now posts progress through
-   `events.post()`, so it needs a `post_event` attribute on that parent to
-   report a DB download. Wire it up and those three columns fill from the local
-   cache. **Do not let it touch the network** — that is Phase 4's job.
-3. **`highlight_standard_parts` is read but nothing sets the trigger refs.**
+   **Phase 3** (they need the assignment path); the three "Add correction …"
+   entries and the two mapping entries need **Phase 5**'s dialogs. Deciding
+   *where* the dispatch lives is the open design question — probably a controller
+   object that owns `PartList`, the window and the dialogs, rather than the
+   window growing handlers. Phase 3 is the phase that has to answer it.
+2. **`highlight_standard_parts` is read but nothing sets the trigger refs.**
    `PartTableModel.set_standard_trigger_refs()` is called by nobody until the BOM
-   estimator lands (Phase 5), so the amber advisory is currently unreachable.
-   Tested directly; not reachable through the UI.
-4. **Match highlighting.** `PartRow.match_terms` exists and is unused. §5.1's
-   "Highlight search matches" is a `QStyledItemDelegate` on the LCSC Params
-   column — the port of `dataview_highlight.HighlightedTextRenderer`. Note that
-   Qt has none of the wx problems that file works around (a renderer painting
-   into the wrong width, a column width discarded before the window is shown), so
-   it should be much smaller.
-5. **Live IPC verification is still deferred.** Everything is proven against
+   estimator lands (**Phase 5**), so the amber advisory is unreachable through
+   the UI. Tested directly.
+3. **Nothing can toggle match highlighting at runtime.** The delegate reads
+   `highlighting.matches` when the window is built and exposes `set_enabled()`;
+   the checkbox that would call it is in the Settings dialog (**Phase 5**).
+4. **Live IPC verification is still deferred.** Everything is proven against
    `FixtureBoard`. KiCad quit during the Phase 0 session and has not been
-   reopened, so no write has yet gone over a real socket. Do this in Phase 3
+   reopened, so no write has yet gone over a real socket. Do this in **Phase 3**
    against a **copy** of a board in the scratchpad, never the user's own.
 
 ### Repository reorganisation (between Phase 2 and Phase 3)
@@ -801,21 +840,35 @@ from the log pane's timestamps, which are not deterministic between runs.
 stated baseline (2026-08-03) and rewriting its paths would misrepresent what was
 reviewed.
 
-### Resume here → Phase 3 and the rest
+### Resume here → Phase 3
 
-Read this whole §10, then `git log --oneline` for the three phase commits. Every
-screen in `docs/screens/` is current as of the Phase 2 commit.
+Read this whole §10, then `git log --oneline` for the phase commits. Every screen
+in `docs/screens/` is current, and Phases 0–2 are done.
 
-Phase 3 (assignment path) is the next phase proper: `Assign LCSC number`,
-`Remove LCSC number`, `Auto-select alike`, `Save mappings`. The bridge work is
-already done — `board.set_lcsc({ref: number})` creates the field if the footprint
-has none (trap 3), verifies by re-reading and raises `WriteVerificationError`
-otherwise, so **no new trap-2 handling is needed**; wire the buttons to it and
-mirror into `store.set_lcsc`. `Auto-select alike` already works as a *selection*
-mode (`PartList.alike()`, latched against recursion in
-`MainWindow._extend_to_alike`); what Phase 3 adds is assigning to that selection
-in one go. `Save mappings` needs `Library`'s mapping table, so it depends on open
-item 2 above.
+**Phase 3 is the assignment path**: `Assign LCSC number`, `Remove LCSC number`,
+`Auto-select alike`, `Save mappings`. Three things are already in place for it:
+
+- **The bridge work is done.** `board.set_lcsc({ref: number})` creates the field
+  if the footprint has none (trap 3), verifies by re-reading and raises
+  `WriteVerificationError` otherwise, so **no new trap-2 handling is needed**.
+  Wire the buttons to it and mirror into `store.set_lcsc`.
+- **`Auto-select alike` already works as a *selection* mode** (`PartList.alike()`,
+  latched against recursion in `MainWindow._extend_to_alike`). What Phase 3 adds
+  is assigning to that selection in one go.
+- **`Save mappings` is unblocked.** `PartList.library` is now a real `Library`,
+  so its mapping table is there to write to.
+
+Two things to settle early, because everything else hangs off them:
+
+1. **Where the row-menu dispatch lives.** `row_menu_triggered` has been emitting
+   into nothing since Phase 2. Copy/Paste LCSC are Phase 3's to connect, and a
+   controller that owns `PartList`, the window and (later) the dialogs looks
+   right — but that is a decision, not a fact, and the window growing handlers is
+   the thing to avoid.
+2. **The first live IPC write.** Everything so far is proven against
+   `FixtureBoard`, which reproduces trap 2 but is not a socket. Do it against a
+   **copy** of a board in the scratchpad, never the user's own, and assert by
+   re-reading.
 
 House rules that have been followed so far and should keep being followed:
 
@@ -861,10 +914,11 @@ Environment notes worth knowing:
   can be read, because KiCad discards both streams.
 - Settings live at
   `~/Library/Preferences/kicad-lcsc-suite/LCSC Suite/settings.json` and were
-  imported once from the wx plugin's file.
+  imported once from the wx plugin's file — which is now
+  `kicad_lcsc_suite/settings.json`, inside the package, because that is what
+  `helpers.PLUGIN_PATH` resolves to. `shared.LEGACY_ROOT` is what finds it.
 - The offscreen platform's virtual screen is **800x800**. `resize()` ignores it
   (so screenshots are 1300x772) but `restoreGeometry()` clamps to it, which is
   why the geometry test asserts height only.
 - No Windows machine is available here, so §7's "one real Windows pass per phase"
   has not been done for any phase. Flagged, not silently skipped.
-

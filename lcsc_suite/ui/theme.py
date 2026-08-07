@@ -54,10 +54,20 @@ _PALETTE: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
     "retail": ((106, 58, 178), (198, 158, 255)),
     # Cost advisory
     "standard": ((166, 90, 12), (240, 160, 96)),
+    # Match highlighting. Deliberately *not* the "standard" amber, which the two
+    # would otherwise share: a standard-mode trigger colours the whole row while
+    # a match tints runs inside one cell, so they co-occur, and one amber for
+    # both would read as a single meaning. Teal is unused elsewhere in the table.
+    "match": ((0, 112, 116), (110, 214, 214)),
     # Chrome
     "muted": ((110, 110, 116), (150, 150, 158)),
     "rule": ((208, 208, 214), (72, 72, 80)),
 }
+
+#: Match-highlight colour when the row is selected. One value for both
+#: appearances, because the selection fill is the same strong blue in both and
+#: the theme's teal disappears against it.
+_MATCH_ON_SELECTION = (255, 215, 64)
 
 #: Window/base/text colours for the two Fusion palettes. Stated rather than
 #: inherited so both platforms and both appearances land on the same pixels.
@@ -197,6 +207,18 @@ def unassigned_colour() -> QColor:
 def standard_trigger_colour() -> QColor:
     """Row colour for parts that push the board into Standard-mode pricing."""
     return colour("standard")
+
+
+def highlight_ink(selected: bool = False) -> QColor:
+    """Colour for the matched runs inside the LCSC Params cell.
+
+    A selected row is filled with a strong blue that the theme's teal vanishes
+    into, so the selected case gets its own high-contrast value rather than a
+    tint of the same hue.
+    """
+    if selected:
+        return QColor(*_MATCH_ON_SELECTION)
+    return colour("match")
 
 
 def base_font() -> QFont:

@@ -59,10 +59,12 @@ from PySide6.QtWidgets import (
 )
 
 from ..kicad_bridge import Board
+from .delegates import MatchHighlightDelegate
 from .icons import ICON_SIZE, icon
 from .log_pane import LogPane
 from .models.part_table import (
     COLUMNS as MODEL_COLUMNS,
+    PARAMS,
     REFERENCE_ROLE,
     SORT_ROLE,
     PartTableModel,
@@ -372,6 +374,15 @@ class MainWindow(QMainWindow):
         self.part_proxy.setSortRole(SORT_ROLE)
         self.part_proxy.setSortCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.set_model(self.part_proxy)
+
+        # Match highlighting, on the one column that has anything to match. The
+        # terms are the row's own value and footprint, so a lit-up cell is one
+        # whose derived parameters agree with what the board declares — see
+        # ui/delegates.py. Settings' "Highlight search matches" toggles it.
+        self.params_delegate = MatchHighlightDelegate(
+            self, enabled=bool(self._setting("highlighting", "matches", True))
+        )
+        table.setItemDelegateForColumn(PARAMS, self.params_delegate)
 
         table.selectionModel().selectionChanged.connect(self._on_selection_changed)
         table.customContextMenuRequested.connect(self._on_context_menu)

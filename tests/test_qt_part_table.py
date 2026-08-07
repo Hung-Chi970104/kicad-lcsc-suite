@@ -29,14 +29,28 @@ from lcsc_suite import (
     kicad_bridge,  # noqa: E402
 )
 from lcsc_suite.config import Settings  # noqa: E402
-from lcsc_suite.parts import PartList, board_part_records  # noqa: E402
+from lcsc_suite.parts import (  # noqa: E402
+    PartList,
+    _match_terms,
+    _StoreOwner,
+    board_part_records,
+    open_fixture_library,
+    open_library,
+)
 from lcsc_suite.ui import theme  # noqa: E402
+from lcsc_suite.ui.delegates import MatchHighlightDelegate  # noqa: E402
 from lcsc_suite.ui.models.part_table import (  # noqa: E402
     BOM,
+    FOOTPRINT,
     LCSC,
+    MATCH_TERMS_ROLE,
+    PARAMS,
+    POS,
     REF,
     SORT_ROLE,
     STOCK,
+    TYPE,
+    VALUE,
     PartRow,
     PartTableModel,
 )
@@ -72,6 +86,17 @@ def part_list(board, tmp_path):
 
 def _cell(model, row, column, role=Qt.ItemDataRole.DisplayRole):
     return model.data(model.index(row, column), role)
+
+
+def _highlighted_row(reference, value, footprint, params):
+    """Build a row the way ``PartList.rows()`` does, terms and all.
+
+    The model carries the terms; it does not derive them. Keeping that split is
+    why this helper exists rather than a ``PartRow`` that expands its own value.
+    """
+    row = PartRow(reference, value, footprint, params=params)
+    row.match_terms = _match_terms(row)
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -320,3 +345,172 @@ def test_lcsc_column_shows_the_number_the_board_carries(part_list):
     """The store is the authority, but it was reconciled from the board."""
     model = PartTableModel(part_list.rows())
     assert _cell(model, model.row_for("C1"), LCSC) == "C13585"
+
+
+# ---------------------------------------------------------------------------
+# The part libraries, and the three columns they fill
+# ---------------------------------------------------------------------------
+
+
+def test_without_a_library_the_api_columns_are_blank_not_broken(part_list):
+    """No data directory costs three columns; it must not stop the window."""
+    assert part_list.library is None
+    model = PartTableModel(part_list.rows())
+    row = model.row_for("C1")
+
+    assert _cell(model, row, TYPE) == ""
+    # "?" because the part *has* a number and nobody has answered about it.
+    assert _cell(model, row, STOCK) == "?"
+
+
+def test_a_broken_data_directory_returns_no_library_rather_than_raising(tmp_path):
+    """An unreadable cache is a missing column, not a failure to start."""
+    settings = Settings(path=str(tmp_path / "settings.json"))
+    # A file where the data directory should be: Library cannot mkdir over it.
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory", encoding="utf-8")
+    settings.values.setdefault("library", {})["data_path"] = str(blocked)
+
+    assert open_library(_StoreOwner(settings, project_path=str(tmp_path))) is None
+
+
+def test_the_fixture_library_fills_type_stock_and_params(part_list, tmp_path):
+    """The three columns resolve from the local cache, with no network."""
+    part_list.library = open_fixture_library(part_list.owner, str(tmp_path / "libdata"))
+    model = PartTableModel(part_list.rows())
+    row = model.row_for("C1")
+
+    assert _cell(model, row, TYPE) == "Basic"
+    assert _cell(model, row, STOCK) == "4,665,998"
+    assert _cell(model, row, PARAMS) == "10uF 50V 1206"
+
+
+def test_a_part_absent_from_the_cache_still_reads_as_unknown(part_list, tmp_path):
+    """Seven of the fixture's numbers are uncached on purpose.
+
+    They are what keeps "?" — nobody answered — visible in the same screenshot
+    as real figures, so the two can be told apart by eye.
+    """
+    part_list.library = open_fixture_library(part_list.owner, str(tmp_path / "libdata"))
+    model = PartTableModel(part_list.rows())
+    row = model.row_for("R3")
+
+    assert _cell(model, row, LCSC) == "C137969"
+    assert _cell(model, row, STOCK) == "?"
+    assert _cell(model, row, TYPE) == ""
+
+
+def test_opening_the_libraries_never_reaches_the_network(part_list, tmp_path):
+    """Phase 2 resolves from local storage only; fetching is Phase 4's job."""
+    part_list.settings.values.setdefault("library", {})["data_path"] = str(
+        tmp_path / "libdata"
+    )
+    part_list.open_libraries()
+
+    assert part_list.library is not None
+    assert part_list.library.allow_network is False
+
+
+# ---------------------------------------------------------------------------
+# Match highlighting — the row's own value and footprint, not a search
+# ---------------------------------------------------------------------------
+
+
+def test_match_terms_come_from_the_rows_own_value_and_footprint():
+    """A lit-up cell is one whose derived params agree with the board."""
+    row = PartRow("R2", "100K", "R_0402_1005Metric", params="100kΩ ±1% 0402")
+
+    terms = _match_terms(row)
+
+    assert "100k" in terms  # the value
+    assert "0402" in terms  # the package, extracted from the footprint name
+
+
+def test_match_terms_carry_the_ohm_and_micro_spellings():
+    """`390R` is `390Ω` and `10uF` is `10µF`; the cell uses whichever LCSC did.
+
+    This is the reason the expansion is shared with the wx plugin rather than
+    rewritten — the equivalences have a long tail and getting one wrong shows up
+    as a cell that simply never highlights.
+    """
+    assert "100kω" in _match_terms(
+        PartRow("R2", "100K", "R_0402_1005Metric", params="100kΩ ±1% 0402")
+    )
+    assert "1μf" in _match_terms(
+        PartRow("C10", "1uF", "C_0603_1608Metric", params="1uF 50V 0603")
+    )
+
+
+def test_short_terms_are_dropped():
+    """One- and two-character terms match almost anything and are noise."""
+    assert _match_terms(PartRow("R1", "1", "R_0402_1005Metric", params="1Ω 0402")) == (
+        "0402",
+    )
+
+
+def test_a_row_with_no_params_has_nothing_to_highlight():
+    """No text in the cell, so no terms — and no work done building them."""
+    assert _match_terms(PartRow("B1", "M3 Mounting Hole", "MountingHole_3.2mm")) == ()
+
+
+def test_part_list_rows_carry_their_highlight_terms(part_list, tmp_path):
+    """The wiring: without this the delegate is painted nothing to work with."""
+    part_list.library = open_fixture_library(part_list.owner, str(tmp_path / "lib"))
+    row = next(r for r in part_list.rows() if r.reference == "R2")
+
+    assert row.params
+    assert "0402" in row.match_terms
+
+
+def test_only_the_params_column_offers_highlight_terms():
+    """A delegate on any other column must find nothing to paint."""
+    model = PartTableModel(
+        [_highlighted_row("R2", "100K", "R_0402_1005Metric", "100kΩ ±1% 0402")]
+    )
+
+    assert _cell(model, 0, PARAMS, MATCH_TERMS_ROLE)
+    for column in (REF, VALUE, FOOTPRINT, LCSC, TYPE, STOCK, BOM, POS):
+        assert _cell(model, 0, column, MATCH_TERMS_ROLE) is None
+
+
+def test_the_delegate_finds_the_spans_the_cell_should_tint():
+    """The join between the model's terms and the painted runs."""
+    model = PartTableModel(
+        [_highlighted_row("R2", "100K", "R_0402_1005Metric", "100kΩ ±1% 0402")]
+    )
+    delegate = MatchHighlightDelegate()
+    index = model.index(0, PARAMS)
+    text = index.data(Qt.ItemDataRole.DisplayRole)
+
+    spans = delegate._spans(text, index)
+
+    assert [text[start:end] for start, end in spans] == ["100kΩ", "0402"]
+
+
+def test_highlighting_off_paints_nothing_specially():
+    """Settings' toggle has to reach the delegate, not just the setting file."""
+    model = PartTableModel(
+        [_highlighted_row("R2", "100K", "R_0402_1005Metric", "100kΩ ±1% 0402")]
+    )
+    delegate = MatchHighlightDelegate(enabled=False)
+    index = model.index(0, PARAMS)
+
+    assert delegate._spans(index.data(Qt.ItemDataRole.DisplayRole), index) == []
+
+    delegate.set_enabled(True)
+    assert delegate._spans(index.data(Qt.ItemDataRole.DisplayRole), index) != []
+
+
+def test_a_selected_row_uses_a_different_highlight_colour():
+    """The theme's teal disappears into the selection fill."""
+    assert theme.highlight_ink(selected=True) != theme.highlight_ink(selected=False)
+
+
+def test_match_highlighting_is_not_the_standard_mode_amber():
+    """Two different meanings that can appear on the same row.
+
+    A standard-mode trigger colours the whole row and says "this costs more";
+    a match tints runs inside one cell and says "this corroborates". One colour
+    for both would read as one meaning — the mistake red and amber made once.
+    """
+    assert theme.highlight_ink() != theme.standard_trigger_colour()
