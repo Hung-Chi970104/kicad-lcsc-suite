@@ -131,6 +131,9 @@ class MainWindow(QMainWindow):
         # Latch: growing a selection to the alike parts fires selectionChanged
         # again, and without this the handler recurses.
         self._selecting_alike = False
+        #: Row-menu ids the controller answers; None means all of them. See
+        #: set_row_menu_enabled.
+        self._enabled_row_menu: set | None = None
         self.setObjectName("lcsc-suite-main")
 
         info = board.info()
@@ -452,16 +455,31 @@ class MainWindow(QMainWindow):
         finally:
             self._selecting_alike = False
 
+    def set_row_menu_enabled(self, entry_ids) -> None:
+        """Declare which row-menu entries are live.
+
+        Called by the controller with the ids it answers. The rest are greyed
+        out rather than removed: they are part of the wx plugin's menu and come
+        back as their dialogs land, and a menu that changes shape between
+        releases is harder to relearn than one with a disabled entry in it.
+
+        ``None`` means "everything", which is what a window built without a
+        controller gets.
+        """
+        self._enabled_row_menu = None if entry_ids is None else set(entry_ids)
+
     def _on_context_menu(self, position) -> None:
         """Show §5.1's row menu and report which entry was chosen.
 
-        The window builds the menu; a controller decides what the entries *do*.
-        Each entry carries a stable id in its data rather than being matched on
-        its label, so the wording can change without breaking the dispatch.
+        The window builds the menu; the controller decides what the entries
+        *do*. Each entry carries a stable id in its data rather than being
+        matched on its label, so the wording can change without breaking the
+        dispatch.
         """
         references = self.selected_references()
         if not references:
             return
+        allowed = self._enabled_row_menu
         menu = QMenu(self)
         for entry_id, label in ROW_MENU:
             if entry_id is None:
@@ -469,6 +487,8 @@ class MainWindow(QMainWindow):
                 continue
             action = menu.addAction(label)
             action.setData(entry_id)
+            if allowed is not None and entry_id not in allowed:
+                action.setEnabled(False)
         chosen = menu.exec(self.part_table.viewport().mapToGlobal(position))
         if chosen is not None:
             self.row_menu_triggered.emit(chosen.data(), references)
@@ -565,15 +585,9 @@ class MainWindow(QMainWindow):
         self.select_alike_action.toggled.connect(
             lambda checked: self._store_setting("general", "select_alike_auto", checked)
         )
-        self.toggle_bom_pos_action.triggered.connect(
-            lambda: self._toggle_exclusions(bom=True, pos=True)
-        )
-        self.toggle_bom_action.triggered.connect(
-            lambda: self._toggle_exclusions(bom=True)
-        )
-        self.toggle_pos_action.triggered.connect(
-            lambda: self._toggle_exclusions(pos=True)
-        )
+        # The three exclusion toggles write to the board and the project
+        # database, so they belong to the controller — see controller.py's rule.
+        # The two Hide toggles do not: they filter what this window shows.
         self.hide_bom_action.toggled.connect(self._on_hide_bom_toggled)
         self.hide_pos_action.toggled.connect(self._on_hide_pos_toggled)
         return bar
@@ -656,29 +670,6 @@ class MainWindow(QMainWindow):
             self.select_references(selected)
         assigned = sum(1 for row in self.part_model.rows() if row.assigned)
         log.info("%d parts, %d assigned", self.part_model.rowCount(), assigned)
-
-    def _toggle_exclusions(self, bom: bool = False, pos: bool = False) -> None:
-        """Flip BOM and/or POS exclusion on the selected rows.
-
-        The write goes to the board first and only then to the project database:
-        the bridge verifies by re-reading, so a write that did not land raises
-        before the database has been told it did. A database that disagrees with
-        the board is how a BOM comes out wrong.
-        """
-        references = self.selected_references()
-        if not references or self.parts is None:
-            return
-        try:
-            self.parts.toggle_exclusions(references, bom=bom, pos=pos)
-        except Exception:  # noqa: BLE001 - report it, do not take the window down
-            log.exception("Could not change the BOM/POS exclusions")
-            QMessageBox.critical(
-                self,
-                "LCSC Suite",
-                "KiCad did not accept the change to the BOM/POS attributes. "
-                "The board has been left as it was; see the log for details.",
-            )
-        self.reload_parts()
 
     def _on_hide_bom_toggled(self, checked: bool) -> None:
         """Show or hide the parts excluded from the BOM."""

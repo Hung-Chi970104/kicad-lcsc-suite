@@ -28,7 +28,7 @@ import logging
 import os
 from typing import Optional, Sequence
 
-from .kicad_bridge import Board, FootprintView
+from .kicad_bridge import Board, FootprintView, sanitize_lcsc
 from .shared import (
     derive_params,
     highlight_terms,
@@ -279,6 +279,61 @@ class PartList:
             for reference in references:
                 self.store.set_pos(reference, int(bool(pos)))
 
+    def assign(self, references: Sequence[str], number: str, stock=None) -> list[str]:
+        """Put one LCSC number on every reference, board first then database.
+
+        The same order and the same reason as :meth:`set_exclusions`: the bridge
+        creates the field if the footprint has none (trap 3) and proves the write
+        by re-reading, so a board that refused the change raises here — before
+        the project database has been told the part is assigned. A database
+        claiming an assignment the board does not have is what puts a part in the
+        BOM that JLC will never be told to place.
+
+        ``stock`` is written through as the caller gave it, ``None`` included:
+        the Explorer knows a figure at assignment time and a typed number does
+        not, and ``None`` is "nobody answered", which is not ``0``. Type and
+        params are deliberately *not* written here — they are cache-derived, the
+        cache may not have this number yet, and :meth:`rows` resolves them on the
+        next rebuild.
+
+        Returns the references that were actually written, which is the subset
+        that exists on the board.
+        """
+        number = sanitize_lcsc(number)
+        if not number:
+            raise ValueError(
+                "That is not an LCSC number (expected C followed by digits)"
+            )
+        return self._write_lcsc(references, number, stock)
+
+    def clear(self, references: Sequence[str]) -> list[str]:
+        """Remove the LCSC number from every reference, board first.
+
+        The stock figure goes with it. Leaving it behind would show a count
+        against a part that no longer names one, and the next rebuild has no
+        number to re-resolve it from.
+        """
+        return self._write_lcsc(references, "", None)
+
+    def _write_lcsc(self, references: Sequence[str], number: str, stock) -> list[str]:
+        """Shared body of :meth:`assign` and :meth:`clear`."""
+        known = {view.reference for view in self.board.footprints()}
+        targets = [reference for reference in references if reference in known]
+        missing = [reference for reference in references if reference not in known]
+        if missing:
+            # Not fatal: the list can outlive a footprint the user deleted in
+            # KiCad while this window was open. Say so and write the rest.
+            log.warning(
+                "Not on the board, so not assigned: %s", ", ".join(sorted(missing))
+            )
+        if not targets:
+            return []
+        self.board.set_lcsc(dict.fromkeys(targets, number))
+        for reference in targets:
+            self.store.set_lcsc(reference, number)
+            self.store.set_stock(reference, None if stock is None else int(stock))
+        return targets
+
     def toggle_exclusions(
         self, references: Sequence[str], bom: bool = False, pos: bool = False
     ) -> None:
@@ -307,6 +362,80 @@ class PartList:
             self.board.set_exclude_from_pos(wanted)
             for reference, state in wanted.items():
                 self.store.set_pos(reference, int(state))
+
+    # -- mappings -----------------------------------------------------------
+    #
+    # A mapping is "a part with this footprint and this value is normally this
+    # LCSC number". It is the project-independent half of the assignment work:
+    # the next board with a 100nF 0402 on it should not have to be told again.
+    # The table is shared with the wx plugin (one mappings database in the
+    # configured data directory), so both halves see each other's entries.
+
+    def remember_mappings(self, references: Optional[Sequence[str]] = None) -> int:
+        """Record footprint+value -> LCSC, for ``references`` or for everything.
+
+        ``None`` means every part on the board, which is what the ``Save
+        mappings`` button asks for; a sequence is the row-menu's ``Add mapping``.
+
+        Rows missing any of the three are skipped rather than stored blank: a
+        mapping keyed on an empty footprint would match every part without one
+        and hand them all the same number.
+
+        Returns how many mappings were written.
+        """
+        if self.library is None:
+            log.warning("No parts library is open, so mappings cannot be saved")
+            return 0
+        wanted = None if references is None else set(references)
+        written = 0
+        for part in self.store.read_all():
+            if wanted is not None and str(part.get("reference") or "") not in wanted:
+                continue
+            written += self._remember_one(
+                str(part.get("footprint") or ""),
+                str(part.get("value") or ""),
+                str(part.get("lcsc") or ""),
+            )
+        return written
+
+    def save_all_mappings(self) -> int:
+        """Record a mapping for every assigned part on the board."""
+        return self.remember_mappings(None)
+
+    def _remember_one(self, footprint: str, value: str, lcsc: str) -> int:
+        """Insert or update one mapping. Returns 1 if it was written, else 0."""
+        if not (footprint and value and lcsc):
+            return 0
+        if self.library.get_mapping_data(footprint, value):
+            self.library.update_mapping_data(footprint, value, lcsc)
+        else:
+            self.library.insert_mapping_data(footprint, value, lcsc)
+        return 1
+
+    def mapped_numbers(self, references: Sequence[str]) -> dict:
+        """Look up the remembered LCSC number for each of ``references``.
+
+        Only references that *have* a mapping appear in the result, so a caller
+        can tell "nothing remembered" from "remembered as blank" — the latter
+        cannot occur, because :meth:`_remember_one` refuses to store one.
+        """
+        if self.library is None:
+            return {}
+        wanted = set(references)
+        found = {}
+        for part in self.store.read_all():
+            reference = str(part.get("reference") or "")
+            if reference not in wanted:
+                continue
+            footprint = str(part.get("footprint") or "")
+            value = str(part.get("value") or "")
+            if not (footprint and value):
+                continue
+            row = self.library.get_mapping_data(footprint, value)
+            # (footprint, value, LCSC) — the third column is the number.
+            if row and len(row) > 2 and row[2]:
+                found[reference] = str(row[2])
+        return found
 
     # -- queries ------------------------------------------------------------
 

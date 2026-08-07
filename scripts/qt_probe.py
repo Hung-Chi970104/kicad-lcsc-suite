@@ -157,10 +157,17 @@ def dump_table(view, label: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _main_window(context):
-    """Build the main window against the probe's board and settings."""
+def _controller(context):
+    """Build the controller, its part list and its window — the whole app.
+
+    Through the controller rather than by constructing a ``MainWindow``
+    directly, because a screenshot of a window whose buttons are inert is not
+    evidence about the app the user runs. It is also what lets a screen *do*
+    something before it is grabbed, which is how the assignment screens below
+    show a real write rather than a mock-up.
+    """
+    from lcsc_suite.controller import build
     from lcsc_suite.parts import PartList, open_fixture_library
-    from lcsc_suite.ui.main_window import MainWindow
 
     parts = PartList(context.board, settings=context.settings)
     # A throwaway data directory seeded from fixtures/part_details.json, never
@@ -171,9 +178,14 @@ def _main_window(context):
     parts.library = open_fixture_library(
         parts.owner, tempfile.mkdtemp(prefix="lcsc-probe-library-")
     )
-    window = MainWindow(context.board, settings=context.settings, parts=parts)
-    window.show()
-    return window
+    controller = build(context.board, parts, settings=context.settings)
+    controller.window.show()
+    return controller
+
+
+def _main_window(context):
+    """Build the main window against the probe's board and settings."""
+    return _controller(context).window
 
 
 def screen_mainwindow(context) -> QWidget:
@@ -191,23 +203,87 @@ def screen_mainwindow_unassigned(context) -> QWidget:
     list can show. Mounting holes and test points are excluded from the BOM and
     are deliberately *not* marked.
     """
-    from lcsc_suite.ui.models.part_table import REFERENCE_ROLE
-
     window = _main_window(context)
+    _scroll_to(
+        window,
+        [row.reference for row in window.part_model.rows() if row.needs_a_number],
+    )
+    return window
+
+
+def _unassigned_references(window, limit: int = 4) -> list:
+    """Return the first few references that are in the BOM with no number."""
+    return [row.reference for row in window.part_model.rows() if row.needs_a_number][
+        :limit
+    ]
+
+
+def _scroll_to(window, references) -> None:
+    """Scroll the table so the first of ``references`` is at the top."""
     table = window.part_table
     model = table.model()
-    wanted = {row.reference for row in window.part_model.rows() if row.needs_a_number}
+    from lcsc_suite.ui.models.part_table import REFERENCE_ROLE
+
+    wanted = set(references)
     for row in range(model.rowCount()):
         if model.data(model.index(row, 0), REFERENCE_ROLE) in wanted:
             table.scrollTo(model.index(row, 0), table.ScrollHint.PositionAtTop)
-            break
+            return
+
+
+def screen_assign_dialog(context) -> QWidget:
+    """Build the LCSC number entry dialog over a real selection (Phase 3).
+
+    The references are the fixture's own unassigned parts, not invented ones, so
+    the dialog is shown doing the job it exists for: naming a number for the
+    rows the list is marking red.
+    """
+    from lcsc_suite.ui.assign_dialog import AssignNumberDialog
+
+    controller = _controller(context)
+    window = controller.window
+    references = _unassigned_references(window)
+    window.select_references(references)
+    dialog = AssignNumberDialog(window, references)
+    # A pasted product URL rather than a bare number: it exercises the hint line
+    # that says which number was extracted, which is the part of this dialog
+    # worth being able to look at.
+    dialog.input.setText("https://www.lcsc.com/product-detail/C1524.html")
+    dialog.show()
+    return dialog
+
+
+def screen_mainwindow_assigned(context) -> QWidget:
+    """Build the main window just after an assignment landed (Phase 3).
+
+    The counterpart to ``mainwindow-unassigned``: the same rows, assigned. Red
+    and bold has gone, the LCSC column carries the number, and Type / JLC Stock
+    fill from the seeded cache — which together are the evidence that the write
+    reached the board *and* the project database and that the list re-resolved
+    afterwards.
+    """
+    controller = _controller(context)
+    window = controller.window
+    references = _unassigned_references(window)
+    # C1525 because it is one of the numbers `fixtures/part_details.json` seeds
+    # the cache with, so Type / JLC Stock / LCSC Params fill in and the row is
+    # complete. It is a 100nF 0402, which is not what any of these four parts
+    # actually is — the fixture's only unassigned-and-in-the-BOM references are
+    # three logos and a jumper. That mismatch is visible and correct: nothing
+    # lights up in LCSC Params, because match highlighting marks where the
+    # derived parameters agree with the board, and here they do not.
+    controller.assign_number(references, "C1525")
+    window.select_references(references)
+    _scroll_to(window, references)
     return window
 
 
 #: name -> builder. Grows one entry per phase; ``--all`` renders every one, so
 #: adding a screen here is what puts it under CI.
 SCREENS = {
+    "assign-dialog": screen_assign_dialog,
     "mainwindow": screen_mainwindow,
+    "mainwindow-assigned": screen_mainwindow_assigned,
     "mainwindow-unassigned": screen_mainwindow_unassigned,
 }
 
@@ -222,11 +298,20 @@ class Context:
 
 
 def open_board(args):
-    """Open the board a probe run should render against.
+    """Open the board a screen should render against.
 
-    The fixture is pointed at a fresh temporary project directory: store.py
+    Called **once per screen**, not once per run. The fixture board is mutable
+    and screens now write to it: ``mainwindow-assigned`` assigns a number, and
+    sharing one board would leave ``mainwindow-unassigned`` — rendered after it,
+    alphabetically — with nothing unassigned left to show. A screenshot that
+    depends on which screens ran before it is not evidence about anything.
+
+    Each gets a fresh temporary project directory for the same reason: store.py
     really does create ``<project>/jlcpcb/project.db``, and a probe run must not
     write into the checkout or carry state between runs.
+
+    ``--live`` is the exception — there is one KiCad and one open board, and the
+    live path is for looking at real data, not for reproducible screenshots.
     """
     if args.live:
         return kicad_bridge.connect()
@@ -322,15 +407,21 @@ def main(argv=None) -> int:
 
     modes = ("light", "dark") if args.theme == "both" else (args.theme,)
     failures = []
+    live_board = None
     for mode in modes:
         application = app_module.build_application(theme_mode=mode, offscreen=True)
-        board = open_board(args)
         for name in names:
-            # Fresh settings per screen: the main window saves its geometry on
-            # close, and the next screen would restore it — which offscreen means
-            # being clamped to the 800x800 virtual screen and rendering at the
-            # wrong size for a reason that has nothing to do with the screen
-            # under review.
+            # Fresh board and fresh settings per screen. The board because
+            # screens write to it (see open_board); the settings because the
+            # main window saves its geometry on close and the next screen would
+            # restore it — which offscreen means being clamped to the 800x800
+            # virtual screen and rendering at the wrong size for a reason that
+            # has nothing to do with the screen under review.
+            if args.live:
+                live_board = live_board or open_board(args)
+                board = live_board
+            else:
+                board = open_board(args)
             context = Context(board, probe_settings(), args)
             ok, problem = render(name, context, args.out, mode)
             if not ok:

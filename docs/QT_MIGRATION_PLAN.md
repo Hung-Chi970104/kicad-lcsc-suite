@@ -120,7 +120,12 @@ plan was written, not assumed:
 | Qt offscreen render → self-screenshot | ✅ no display needed |
 | Footprint position + rotation (for CPL) | ⚠️ exposed on the API, **not exercised** |
 
-### Three traps found in the spike — read before writing code
+### Four traps — read before writing code
+
+Traps 1–3 were found in the spike. **Trap 4 was found in Phase 3, the first time
+a write crossed a real socket**, and it had defeated the original design of the
+verification itself. Everything before that had been proven against a fixture
+that was more permissive than the API.
 
 1. **KiCad poisons the environment.** It hands its own `PYTHONHOME` down to
    `exec` plugins, which kills a venv Python instantly with
@@ -139,6 +144,25 @@ plan was written, not assumed:
    creating one goes through `footprint.definition.add_item(field)`, then
    `update_items(footprint)`. Clone an existing `Field` and
    `proto.ClearField("id")` rather than constructing one.
+
+4. **An open commit is invisible to a read, so you cannot verify before you
+   commit.** `update_items` applies immediately when no commit is open, but
+   between `begin_commit()` and `push_commit()` the board keeps answering
+   `get_footprints()` from the *committed* state. The obvious ordering —
+   mutate, verify, commit only if the board agrees — therefore fails every
+   time, and fails **looking exactly like trap 2**: a clean return value and an
+   unchanged board.
+
+   `kicad_bridge._Board.apply` snapshots first, pushes, *then* verifies, and on
+   a mismatch puts the snapshot back in a second commit. `drop_commit` does roll
+   back correctly — it is simply unreachable as a response to a verification
+   that cannot have run yet. The price is that a failed write leaves two entries
+   in KiCad's undo history rather than none; the board itself ends up unchanged
+   either way.
+
+   `FixtureBoard` reproduces this as well as trap 2 — staged in `_pending`,
+   visible only on `_push`. It did not, before Phase 3, and that is precisely
+   why the bug survived two phases of green tests.
 
 ---
 
@@ -765,14 +789,16 @@ Landed:
 **Still open, and each blocked on a later phase** — none of these is work that
 can be finished here:
 
-1. **The context menu is wired but inert.** `MainWindow._on_context_menu` emits
+1. ~~**The context menu is wired but inert.**~~ **Closed in Phase 3**, which
+   answered the design question with `controller.py`. The guess below that the
+   two mapping entries needed Phase 5 was wrong — they open no dialog — and they
+   landed in Phase 3 too; only the three "Add correction …" entries still wait
+   for Phase 5. Original note: `MainWindow._on_context_menu` emits
    `row_menu_triggered(entry_id, references)` for the ids in
-   `main_window.ROW_MENU`; nothing is connected to it yet. Copy/Paste LCSC are
-   **Phase 3** (they need the assignment path); the three "Add correction …"
-   entries and the two mapping entries need **Phase 5**'s dialogs. Deciding
-   *where* the dispatch lives is the open design question — probably a controller
-   object that owns `PartList`, the window and the dialogs, rather than the
-   window growing handlers. Phase 3 is the phase that has to answer it.
+   `main_window.ROW_MENU`; nothing is connected to it yet. Deciding *where* the
+   dispatch lives is the open design question — probably a controller object that
+   owns `PartList`, the window and the dialogs, rather than the window growing
+   handlers. Phase 3 is the phase that has to answer it.
 2. **`highlight_standard_parts` is read but nothing sets the trigger refs.**
    `PartTableModel.set_standard_trigger_refs()` is called by nobody until the BOM
    estimator lands (**Phase 5**), so the amber advisory is unreachable through
@@ -784,6 +810,8 @@ can be finished here:
    `FixtureBoard`. KiCad quit during the Phase 0 session and has not been
    reopened, so no write has yet gone over a real socket. Do this in **Phase 3**
    against a **copy** of a board in the scratchpad, never the user's own.
+   *(Still open after Phase 3 — KiCad was not running for that session either.
+   See Phase 3's item 1, which is now the oldest outstanding item.)*
 
 ### Repository reorganisation (between Phase 2 and Phase 3)
 
@@ -840,35 +868,180 @@ from the log pane's timestamps, which are not deterministic between runs.
 stated baseline (2026-08-03) and rewriting its paths would misrepresent what was
 reviewed.
 
-### Resume here → Phase 3
+### Phase 3 — Assignment path ✅
+
+`Assign LCSC number`, `Remove LCSC number`, `Auto-select alike` and
+`Save mappings` all write, and the row menu that had been emitting into nothing
+since Phase 2 now dispatches. Phase 2's open design question is settled.
+
+**The answer to "where does the dispatch live" is `lcsc_suite/controller.py`,**
+and the rule it settles on is one line:
+
+> **The window builds, displays and reports. The controller decides and writes.**
+
+`SuiteController` owns the `PartList`, builds the `MainWindow` and holds every
+call that changes the board, the project database or the mappings table. The
+window keeps its layout, its selection, its model and the *appearance* of the row
+menu. `MainWindow._toggle_exclusions` moved here to make the split real — leaving
+half the writes in the window would have made the answer meaningless.
+
+Landed:
+
+- **`lcsc_suite/controller.py`** — `SuiteController`. `assign_number()` is the
+  **single funnel** every source of a number goes through: the dialog,
+  `Paste LCSC`, `Find mapping`, and the Explorer in Phase 4. That is deliberate —
+  the wx plugin writes the same eight lines in four entry points
+  (`assign_parts`, `paste_part_lcsc`, `search_foot_mapping`,
+  `import_from_schematic`) and they have already drifted.
+- **`PartList.assign()` / `.clear()`** — board first, database second, same rule
+  and same reason as `set_exclusions`. `clear()` takes the stock figure with it.
+  `stock` passes through as given, `None` included, because `None` is "nobody
+  answered" and `0` is "a source said none". Type and params are deliberately
+  *not* written: they are cache-derived and `rows()` re-resolves them on the next
+  rebuild, which is why an assignment fills three columns with no second action.
+- **`kicad_bridge.sanitize_lcsc()`** — the wx `sanitize_lcsc` regex, moved next
+  to `LCSC_VALUE_PATTERN` because that is where "what is an LCSC number" already
+  lives. Text with no number in it returns `""`, and **every caller treats that
+  as "do nothing", never as "clear"** — a failed paste must not read as a
+  removal.
+- **`lcsc_suite/ui/assign_dialog.py`** — `AssignNumberDialog`. OK stays disabled
+  until the text contains a number, and a paste that resolves to something
+  different says which number it found.
+- **`PartList.remember_mappings()` / `.mapped_numbers()`** — the mappings table,
+  shared with the wx plugin, so both halves see each other's entries. A row
+  missing footprint, value *or* number is skipped rather than stored blank: a
+  mapping keyed on an empty footprint would match every part without one.
+- **`MainWindow.set_row_menu_enabled()`** — the controller declares which entries
+  it answers; the rest are greyed out, not removed.
+- Screens: `assign-dialog.png` and **`mainwindow-assigned.png`**, the counterpart
+  to `mainwindow-unassigned.png` — the same four rows, assigned. Red and bold
+  gone, the LCSC column filled, Type / JLC Stock / LCSC Params re-resolved from
+  the cache, and the write in the log pane.
+- Tests: `tests/test_qt_assignment.py` (64). 528 → 592 overall.
+
+Departures from the plan and from the wx plugin, all deliberate:
+
+- **The assign dialog is new.** The wx plugin's `Assign LCSC number` opens the
+  Explorer, which is Phase 4, so a phase boundary needed *some* source of
+  numbers. It is not a new capability — `Paste LCSC` is already manual number
+  entry with a clipboard instead of a text field — and it earns its keep past
+  Phase 4, because someone who knows the number should not have to search for
+  it. **Phase 4 makes the Explorer a second caller of `assign_number()`, not a
+  replacement for this.**
+- **`Find mapping` and `Add mapping` landed here, not in Phase 5.** Phase 2's
+  note said the two mapping entries needed Phase 5's dialogs. That was wrong:
+  `add_foot_mapping` and `search_foot_mapping` open no dialog in the wx plugin —
+  they act on the mappings table directly, which `Save mappings` already needed.
+  Only *`Manage mappings`* is a dialog. The three `Add correction …` entries do
+  need Phase 5 and are the only greyed-out entries.
+- **`Copy LCSC` on a multi-row selection now keeps every distinct number**,
+  newline-separated. The wx version reopens the clipboard once per selected row
+  and therefore keeps whichever row it visited last; that is a loop written for
+  one row, not a decision. Single-row behaviour is unchanged, and paste still
+  takes the first number it finds.
+- **`Find mapping` writes one commit per distinct number**, not one per row, so
+  twenty identical capacitors are one undo step.
+
+One probe bug found and fixed while adding the screens, worth knowing because it
+would have silently degraded every future screenshot: **`open_board()` was called
+once per theme and the fixture board is mutable.** `mainwindow-assigned` writes
+to it, and `mainwindow-unassigned` renders after it alphabetically — so the
+"unassigned" screen had nothing unassigned left to show. Boards are now opened
+per screen, for the same reason settings already were.
+
+#### Live IPC verification — done, and it found a real bug
+
+The item deferred since Phase 0 finally ran, against KiCad 10.0.3 with a
+**copy** of the real board (`~/Research/temperature-controller/PCB/PCB_new.kicad_pcb`)
+opened from the scratchpad. It failed on the first write, and it failed for a
+reason no fixture could have shown:
+
+> `WriteVerificationError: KiCad reported success but the board did not change:`
+> `J1: lcsc is 'C8465', expected 'C99999'`
+
+That is **trap 4** (now in §2): a read cannot see an open commit, so
+`apply()`'s original order — mutate, verify, then push only if the board
+agrees — verified against the pre-commit state every single time and could
+never have succeeded over a real socket. Two phases of green tests had passed
+over it, because `FixtureBoard` applied writes to its committed state
+immediately.
+
+What changed as a result:
+
+- **`_Board.apply` was reordered**: snapshot → commit → push → verify →
+  restore-on-mismatch. `_restore()` puts the snapshot back in a second commit
+  and reports whether that worked; the error message now tells the user which
+  of the two states their board is in, because that is their next question.
+- **`FixtureBoard` now stages writes in `_pending` and reveals them on
+  `_push`**, so it reproduces trap 4 as faithfully as it already reproduced
+  trap 2. `test_an_open_commit_is_not_visible_to_a_read` pins it.
+- **Two tests changed meaning, correctly.** "A failed write leaves no commit"
+  is no longer achievable and is now "a failed write puts the board back", plus
+  `test_a_failed_write_costs_two_undo_entries` to state the price deliberately.
+
+After the fix, the live run passes end to end: updating an existing field,
+creating one where the footprint had none (trap 3, hidden as intended), a
+three-reference batch, an exclude-from-BOM flip, and the rejection of a
+non-number — each asserted by re-reading, each restored afterwards. The whole
+app was then rendered against the live board with
+`scripts/qt_probe.py mainwindow --live`, which is the first screenshot of this
+app driven by real IPC rather than the fixture.
+
+**The lesson worth carrying to Phase 4:** a fixture is only evidence to the
+extent that it is *less* permissive than the thing it stands in for. This one
+had been more permissive in exactly one respect, and that respect was where the
+bug was.
+
+**Still open:**
+
+1. **The three `Add correction …` row-menu entries** need Phase 5's Corrections
+   dialog. They are greyed out, and `HANDLED_ROW_MENU` is what says so.
+2. **`schematic_cleared_refs` and `schematic_sync_pending` are maintained but
+   read by nobody.** Phase 7 consumes them. They are tracked from here because
+   only the assignment path knows a removal happened, and the distinction they
+   carry — a reference *deliberately cleared* versus one merely blank — cannot be
+   reconstructed later.
+3. **Windows verification still not run** for any phase.
+
+### Resume here → Phase 4
 
 Read this whole §10, then `git log --oneline` for the phase commits. Every screen
-in `docs/screens/` is current, and Phases 0–2 are done.
+in `docs/screens/` is current, and Phases 0–3 are done.
 
-**Phase 3 is the assignment path**: `Assign LCSC number`, `Remove LCSC number`,
-`Auto-select alike`, `Save mappings`. Three things are already in place for it:
+**Phase 4 is the LCSC Explorer** — the biggest single piece (2918 lines today).
+§6's sub-order still stands: search + results grid → thumbnails → inventory/sort/
+stock filters → parametric facets → detail pane (side and inline) → photo viewer
+→ import/assign buttons.
 
-- **The bridge work is done.** `board.set_lcsc({ref: number})` creates the field
-  if the footprint has none (trap 3), verifies by re-reading and raises
-  `WriteVerificationError` otherwise, so **no new trap-2 handling is needed**.
-  Wire the buttons to it and mirror into `store.set_lcsc`.
-- **`Auto-select alike` already works as a *selection* mode** (`PartList.alike()`,
-  latched against recursion in `MainWindow._extend_to_alike`). What Phase 3 adds
-  is assigning to that selection in one go.
-- **`Save mappings` is unblocked.** `PartList.library` is now a real `Library`,
-  so its mapping table is there to write to.
+Three things are already in place for it:
 
-Two things to settle early, because everything else hangs off them:
+- **The assignment target exists.** `SuiteController.assign_number(references,
+  number, stock=...)` is the funnel; the Explorer supplies `stock` because it has
+  a figure at assignment time. Do not add a second write path.
+- **`lcsc/api.py` is imported as-is** through `shared.lcsc_api`. Copied, not
+  edited — if a UI need seems to require an API change, change the UI.
+- **The threading shape is decided but unbuilt**: `QThreadPool` workers emitting
+  Qt signals, replacing `wx.CallAfter`. `ui/log_pane.py` is the one worked
+  example of marshalling onto the UI thread with a queued signal.
 
-1. **Where the row-menu dispatch lives.** `row_menu_triggered` has been emitting
-   into nothing since Phase 2. Copy/Paste LCSC are Phase 3's to connect, and a
-   controller that owns `PartList`, the window and (later) the dialogs looks
-   right — but that is a decision, not a fact, and the window growing handlers is
-   the thing to avoid.
-2. **The first live IPC write.** Everything so far is proven against
-   `FixtureBoard`, which reproduces trap 2 but is not a socket. Do it against a
-   **copy** of a board in the scratchpad, never the user's own, and assert by
-   re-reading.
+- **The write path is proven over a real socket**, as of Phase 3. The Explorer's
+  assign buttons need no new IPC work at all — call `assign_number()`.
+
+**Re-run `scripts/live_ipc_check.py` whenever `kicad_bridge` is touched.** It
+exercises every write helper against a running KiCad, asserts by re-reading and
+restores everything it changed. It cannot go in CI — it needs KiCad open with a
+board — and that is exactly why it has to be run deliberately:
+
+```bash
+mkdir -p /tmp/lcsc-live
+cp ~/Research/temperature-controller/PCB/PCB_new.kicad_pcb /tmp/lcsc-live/livecheck.kicad_pcb
+open -a "/Applications/KiCad/PCB Editor.app" /tmp/lcsc-live/livecheck.kicad_pcb
+.venv/bin/python scripts/live_ipc_check.py
+```
+
+It refuses to run unless the open board's project path looks disposable, because
+a verification tool that can reach a real project is one bad afternoon from
+being a data-loss tool. Close the board **without saving** afterwards.
 
 House rules that have been followed so far and should keep being followed:
 
@@ -891,7 +1064,7 @@ House rules that have been followed so far and should keep being followed:
   appear at once. `FixtureBoard(honour_footprint_writes=False)` reproduces trap 2
   exactly and is how the read-back assertions are proved.
 - Run `.venv/bin/python -m pytest -q` at every phase boundary. It was 436 tests
-  at the start of the migration and is 512 now. Every file must also pass **on
+  at the start of the migration and is 592 now. Every file must also pass **on
   its own** — the modules under test are shared, so a toolkit stub installed by
   one file is visible to the next:
   `for f in tests/test_*.py; do .venv/bin/python -m pytest -q "$f" >/dev/null || echo "FAILS ALONE: $f"; done`

@@ -175,6 +175,10 @@ split-on-trailing-comma = false
 # plus it must set QT_QPA_PLATFORM before importing Qt, so its imports cannot
 # all live at the top of the file.
 "scripts/qt_probe.py" = ["T201", "E402", "PLC0415"]
+# The bridge's live-write check against a running KiCad. Its pass/fail report is
+# its entire output, and it adds the repo root to sys.path before importing the
+# package, so its imports cannot all live at the top either.
+"scripts/live_ipc_check.py" = ["T201", "E402"]
 # Board access has to work with or without kipy installed (the fixture backend
 # is what CI and the tests use), so `import kipy` is deferred to the call that
 # needs it. Protocol declarations carry their contract in the class docstring.

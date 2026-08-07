@@ -81,7 +81,7 @@ in [CLAUDE.md](CLAUDE.md).
 
 ```text
 lcsc_suite/            THE NEW APP — out-of-process PySide6, own venv (3.12+)
-  kicad_bridge.py      the only module that touches KiCad; closes all three IPC traps
+  kicad_bridge.py      the only module that touches KiCad; closes all four IPC traps
   shared.py            THE ONLY WAY IN to kicad_lcsc_suite's logic modules
   parts.py             board ↔ project database ↔ displayed rows, reconciled
   config.py            settings in the per-user config dir, imported once from the wx plugin
@@ -128,6 +128,7 @@ db_build/              GitHub Action DB conversion (Python ≥3.10, not plugin c
   common/              its parts-DB build & translation library
 scripts/qt_probe.py    renders any Qt screen offscreen to docs/screens/*.png
 scripts/gui_probe.py   the same job for the wx dialogs, under KiCad's Python
+scripts/live_ipc_check.py  proves the bridge's writes against a running KiCad
 tests/                 every test, for both halves — the only pytest testpath
 ```
 
@@ -262,6 +263,16 @@ Verify GUI changes **with a screenshot**, in both halves.
 Commit the updated PNG in the same commit as the UI change. A geometry dump
 (`--geometry`) is a supplement, never a substitute — mistaking one for the
 other is the reason this migration exists.
+
+*Board writes* — a screenshot says nothing about whether the board changed, and
+the fixture cannot find every way the real API differs from it. After touching
+`kicad_bridge.py`, open a **copy** of a board in KiCad and run:
+
+```bash
+.venv/bin/python scripts/live_ipc_check.py     # refuses non-disposable boards
+```
+
+Phase 3 found trap 4 this way, after two phases of green fixture tests.
 
 *Legacy wx plugin* — build the dialog against a stub parent with **KiCad's own
 interpreter**, because that is the wx build whose assertions matter:
