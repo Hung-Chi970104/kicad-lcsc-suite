@@ -83,11 +83,17 @@ in [CLAUDE.md](CLAUDE.md).
 lcsc_suite/            THE NEW APP — out-of-process PySide6, own venv (3.12+)
   kicad_bridge.py      the only module that touches KiCad; closes all four IPC traps
   shared.py            THE ONLY WAY IN to kicad_lcsc_suite's logic modules
+  controller.py        SuiteController — the window reports, this decides and writes
   parts.py             board ↔ project database ↔ displayed rows, reconciled
+  search_source.py     where the Explorer's data comes from: live, or the fixture
+  undo.py              the app's own undo; KiCad's cannot reach the project database
   config.py            settings in the per-user config dir, imported once from the wx plugin
   app.py               QApplication bootstrap (Fusion + palette + font)
   ui/                  the widgets; ui/theme.py is the Qt port of lcsc/theme.py
+    explorer/          the LCSC Explorer — window, results, facets, detail, preview, tasks
+    photo_viewer.py    full-size product photos, retargetable while open
   fixtures/board.json  a 110-footprint board for the probe, CI and the bridge tests
+  fixtures/explorer/   one captured search (raw payloads + thumbnails); see below
 
 kicad_lcsc_suite/      THE LEGACY PLUGIN — in-process wx, KiCad's bundled 3.9.
                        Also holds the logic and assets both halves share, until
@@ -129,10 +135,19 @@ db_build/              GitHub Action DB conversion (Python ≥3.10, not plugin c
 scripts/qt_probe.py    renders any Qt screen offscreen to docs/screens/*.png
 scripts/gui_probe.py   the same job for the wx dialogs, under KiCad's Python
 scripts/live_ipc_check.py  proves the bridge's writes against a running KiCad
+scripts/capture_explorer_fixture.py  ONE SHOT, run by hand. Spends live requests
+                       against hosts that rate-limit; the fixture is committed
 tests/                 every test, for both halves — the only pytest testpath
 ```
 
 Full subsystem walkthrough: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+**The Qt app never touches the network in a probe or a test.**
+`search_source.build_source()` defaults to the live endpoints; the probe and the
+tests pass `FixtureSource`, which primes `api.py`'s own cache with one captured
+search and installs a host breaker that refuses everything else. Same shape as
+`Library(allow_network=False)`. The capture is *raw payloads*, replayed through
+`api.py`'s real parsers — never stored `SearchHit` objects.
 
 **Importing across the halves** goes one way only, and through one door:
 `lcsc_suite.shared` imports from `kicad_lcsc_suite`, never the reverse, and

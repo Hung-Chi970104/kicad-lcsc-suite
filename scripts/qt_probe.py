@@ -157,7 +157,7 @@ def dump_table(view, label: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _controller(context):
+def _controller(context, source=None):
     """Build the controller, its part list and its window — the whole app.
 
     Through the controller rather than by constructing a ``MainWindow``
@@ -178,7 +178,7 @@ def _controller(context):
     parts.library = open_fixture_library(
         parts.owner, tempfile.mkdtemp(prefix="lcsc-probe-library-")
     )
-    controller = build(context.board, parts, settings=context.settings)
+    controller = build(context.board, parts, settings=context.settings, source=source)
     controller.window.show()
     return controller
 
@@ -278,13 +278,157 @@ def screen_mainwindow_assigned(context) -> QWidget:
     return window
 
 
+# ---------------------------------------------------------------------------
+# Phase 4 — the LCSC Explorer
+# ---------------------------------------------------------------------------
+#
+# Every one of these runs against ``lcsc_suite/fixtures/explorer/``, never the
+# live endpoints, and that is not a convenience. CI asserts the committed PNGs
+# match what renders; a grid built from live search results renders differently
+# every run, because stock figures are the most volatile numbers on the screen
+# and three columns show them. ``FixtureSource`` also makes reaching the network
+# structurally impossible — see its module docstring.
+
+
+def _explorer(context, references=None, keyword: str = ""):
+    """Build a controller and its Explorer over the captured result set.
+
+    Through the controller, like every other screen here, because the Explorer's
+    assign path runs through ``SuiteController.assign_number`` and a screenshot
+    of buttons wired to nothing is not evidence about the app.
+    """
+    from lcsc_suite.search_source import FixtureSource
+
+    source = FixtureSource()
+    controller = _controller(context, source=source)
+    window = controller.window
+    if references is None:
+        references = _unassigned_references(window, limit=3)
+    window.select_references(references)
+    explorer = controller.build_explorer(references, keyword=keyword or source.keyword)
+    explorer.show()
+    explorer.start_search()
+    # The search, the facet rebuild, the thumbnail fill and the retail fill all
+    # land through the event loop. One settle here means the later ones in
+    # ``render`` are spent on layout rather than on waiting for data.
+    settle(900)
+    return explorer
+
+
+def screen_explorer(context) -> QWidget:
+    """Build the Explorer as it opens: results, facets, no selection (§5.2)."""
+    return _explorer(context)
+
+
+def screen_explorer_detail(context) -> QWidget:
+    """Build the Explorer with a part selected, details in the side panel.
+
+    Row 0 of the captured set deliberately: it is one of the three the capture
+    took a full-size photo and an EasyEDA CAD record for, so the symbol, the
+    footprint and the photo tiles are all filled rather than showing their
+    "no drawing for this part" placeholders. Those placeholders are real states
+    and worth keeping, but a screenshot of three of them says nothing about
+    whether the previews work.
+    """
+    explorer = _explorer(context)
+    explorer.select_row(0)
+    settle(900)
+    return explorer
+
+
+def screen_explorer_inline(context) -> QWidget:
+    """Build the same details as a full-width expanded row under the part.
+
+    A separate screen because "Side panel" and "Inline below" are different
+    layouts of the same widgets, and the inline one is the arrangement the wx
+    version needed an overlay window and a 100ms tracking timer to fake. Here it
+    is a spanned row carrying the pane as an index widget, so what this picture
+    shows is a genuinely different mechanism, not just a different position.
+    """
+    explorer = _explorer(context)
+    explorer.detail_layout_choice.setCurrentIndex(1)
+    explorer.select_row(1)
+    settle(900)
+    # Framed on the *selected* row, not on the pane. Scrolling to the pane
+    # centres it and pushes the row it belongs to off the top, which loses the
+    # one thing this screen is meant to show: that the details are attached to
+    # a particular result and sit inside the list rather than beside it.
+    rows = explorer.results.selectionModel().selectedRows()
+    if rows:
+        explorer.results.scrollTo(rows[0], explorer.results.ScrollHint.PositionAtTop)
+        settle(200)
+    return explorer
+
+
+def screen_explorer_retail(context) -> QWidget:
+    """Build the Explorer on the LCSC retail inventory, sorted on it.
+
+    The counterpart to ``explorer``: same result set, other warehouse. Worth its
+    own screen because the two figures disagree on 96 of the fixture's 100 rows,
+    so this is where the Inventory selector is visibly doing something rather
+    than relabelling a column. Sorted retail-high-first, which is the ordering
+    that cannot be produced from the search response alone — every figure in it
+    came from a per-part lookup.
+    """
+    explorer = _explorer(context)
+    explorer.inventory.setCurrentIndex(1)
+    explorer.sort_mode.setCurrentIndex(2)
+    settle(900)
+    # The fill lands row by row; re-sorting once it has settled is what the
+    # completion handler does in a live session.
+    explorer.apply_filters()
+    settle(600)
+    return explorer
+
+
+def screen_explorer_facets(context) -> QWidget:
+    """Build the Explorer with a parametric filter applied.
+
+    Two tolerance values ticked and one voltage rating: the result count in the
+    status line, and the fact that it is lower than 100, is the evidence that
+    the semantics are the ones the catalogue needs. Ticking two values inside
+    one attribute must *widen* the result, and adding a second attribute must
+    narrow it.
+    """
+    explorer = _explorer(context)
+    controls = explorer.facets.controls()
+    tolerance = controls.get("Tolerance")
+    if tolerance is not None:
+        values = [value for value, _count in tolerance._values][:2]
+        tolerance.set_selected(values)
+        explorer.facets._on_changed("Tolerance", set(values))
+    voltage = controls.get("Voltage Rating")
+    if voltage is not None:
+        chosen = [value for value, _count in voltage._values][:1]
+        voltage.set_selected(chosen)
+        explorer.facets._on_changed("Voltage Rating", set(chosen))
+    explorer.apply_filters()
+    settle(700)
+    return explorer
+
+
+def screen_photo_viewer(context) -> QWidget:
+    """Build the photo viewer on a product photo at full size (§5.7)."""
+    explorer = _explorer(context)
+    hits = explorer.model.hits()
+    explorer.open_photo_viewer(hits[0])
+    settle(700)
+    return explorer._photo_viewer
+
+
 #: name -> builder. Grows one entry per phase; ``--all`` renders every one, so
 #: adding a screen here is what puts it under CI.
 SCREENS = {
     "assign-dialog": screen_assign_dialog,
+    "explorer": screen_explorer,
+    "explorer-detail": screen_explorer_detail,
+    "explorer-facets": screen_explorer_facets,
+    "explorer-inline": screen_explorer_inline,
+    "explorer-retail": screen_explorer_retail,
     "mainwindow": screen_mainwindow,
     "mainwindow-assigned": screen_mainwindow_assigned,
     "mainwindow-unassigned": screen_mainwindow_unassigned,
+    "photo-viewer": screen_photo_viewer,
 }
 
 

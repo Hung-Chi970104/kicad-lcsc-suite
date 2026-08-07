@@ -171,6 +171,9 @@ split-on-trailing-comma = false
 "db_build/common/progress.py" = ["T201"]
 # A CLI dev tool whose output is the report it prints.
 "scripts/gui_probe.py" = ["T201"]
+# The Explorer fixture capture. One-shot, run by hand, and its printed progress
+# is the only way to see a host starting to refuse partway through.
+"scripts/capture_explorer_fixture.py" = ["T201", "E402"]
 # The Qt migration's acceptance tool. Same deal — its report *is* its output —
 # plus it must set QT_QPA_PLATFORM before importing Qt, so its imports cannot
 # all live at the top of the file.
