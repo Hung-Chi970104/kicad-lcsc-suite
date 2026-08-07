@@ -75,15 +75,17 @@ def main(argv=None) -> int:
         log.info("An LCSC Suite window is already open for %s; raised it.", info.name)
         return 0
 
+    from .controller import build as build_controller
     from .parts import PartList
-    from .ui.main_window import MainWindow
 
     settings = Settings(legacy_path=legacy_settings_path())
     parts = PartList(board, settings=settings)
     # The same data directory the wx plugin fills, so both halves read one part
     # cache, one mappings table and one corrections database while they coexist.
     parts.open_libraries()
-    window = MainWindow(board, settings=settings, parts=parts)
+    # The controller builds the window and owns every write; see controller.py.
+    controller = build_controller(board, parts, settings=settings)
+    window = controller.window
     guard.raise_requested.connect(window.raise_to_front)
     application.aboutToQuit.connect(guard.release)
     window.show()

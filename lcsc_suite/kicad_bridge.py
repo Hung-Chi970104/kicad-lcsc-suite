@@ -31,6 +31,20 @@ Trap 3 — **custom fields are not on the footprint.**
     ``definition.add_item`` after cloning an existing ``Field`` and clearing
     its id. :meth:`_Ipc._ensure_lcsc_field` is the only place that knows this.
 
+Trap 4 — **an open commit is invisible to a read.**
+    Found only when the first write crossed a real socket, during Phase 3.
+    ``update_items`` applies immediately when no commit is open, but inside
+    ``begin_commit()`` … ``push_commit()`` the board keeps answering
+    ``get_footprints()`` from the *committed* state. So the obvious ordering —
+    mutate, verify, then commit only if the board agrees — can never succeed:
+    the read always returns the old value and every write looks like trap 2.
+
+    :meth:`_Board.apply` therefore snapshots first, **pushes**, and only then
+    verifies; on a mismatch it puts the snapshot back in a second commit. The
+    cost is that a failed write leaves two entries in KiCad's undo history
+    rather than none. ``drop_commit`` *does* roll back correctly — it is just
+    unreachable as a response to a verification that cannot run yet.
+
 Two backends implement the same :class:`Board` protocol:
 
 ``_Ipc``
@@ -63,6 +77,11 @@ LCSC_FIELD_PATTERN = re.compile(r"lcsc|jlc", re.IGNORECASE)
 #: What a *value* has to look like to be read back as an LCSC number. A field
 #: holding free text is not an assignment.
 LCSC_VALUE_PATTERN = re.compile(r"^C\d+$")
+
+#: The same number embedded in something else — a pasted URL, a line copied out
+#: of a datasheet. Used only to *interpret input*; what counts as an assignment
+#: on the board is still :data:`LCSC_VALUE_PATTERN`.
+LCSC_SEARCH_PATTERN = re.compile(r"C\d+", re.IGNORECASE)
 
 #: The field created when a footprint has none. Hidden, like the wx plugin's.
 DEFAULT_LCSC_FIELD = "LCSC"
@@ -221,15 +240,18 @@ class _Board:
     def apply(self, edits: Sequence[Edit], message: str) -> Sequence[FootprintView]:
         """Apply ``edits`` as one undo step, then prove they landed.
 
-        The order here is the whole point:
+        The order here is the whole point, and it is not the order you would
+        write first (see trap 4 in this module's docstring):
 
-        1. open a commit,
-        2. mutate the footprints,
-        3. push the mutations at their **parent footprints**,
-        4. **re-read the board** and compare against every ``Edit.expect``,
-        5. push the commit only if the board actually says what it should;
-           otherwise drop it, so a failed verification leaves nothing behind,
-           and raise.
+        1. **snapshot** the attributes every edit touches, because they are the
+           only way back if the write turns out not to have landed,
+        2. open a commit,
+        3. mutate the footprints and push each mutation at its **parent
+           footprint**,
+        4. **push the commit** — a read cannot see an open commit, so this has
+           to happen before there is anything to verify,
+        5. re-read the board and compare against every ``Edit.expect``,
+        6. on a mismatch, put the snapshot back in a second commit and raise.
 
         A backend's ``update_items`` return value is never consulted. It says
         "success" for a write that changed nothing.
@@ -237,29 +259,91 @@ class _Board:
         if not edits:
             return self.footprints()
 
+        before = {
+            view.reference: view
+            for view in self._read_footprints()
+            if view.reference in {edit.reference for edit in edits}
+        }
         commit = self._begin()
         try:
             for edit in edits:
                 target = self._live_footprint(edit.reference)
                 edit.mutate(target)
                 self._commit(target)
-            after = {view.reference: view for view in self._read_footprints()}
-            mismatches = _verify(edits, after)
         except Exception:
+            # Nothing has been pushed yet, so dropping really does leave the
+            # board as it was. This is the one path where that still holds.
             self._drop(commit)
             self._cache = None
             raise
+
+        self._push(commit, message)
+        self._cache = None
+        after = {view.reference: view for view in self._read_footprints()}
+        mismatches = _verify(edits, after)
         if mismatches:
-            self._drop(commit)
-            self._cache = None
+            restored = self._restore(before, edits)
             raise WriteVerificationError(
                 "KiCad reported success but the board did not change:\n  "
                 + "\n  ".join(mismatches)
-                + "\nThe commit was dropped; the board is unchanged."
+                + (
+                    "\nThe previous values have been put back; the board is as "
+                    "it was, at the cost of two entries in the undo history."
+                    if restored
+                    else "\nPutting the previous values back ALSO failed. The "
+                    "board is in an unknown state — undo in KiCad before "
+                    "changing anything else."
+                )
             )
-        self._push(commit, message)
-        self._cache = None
         return self.footprints(refresh=True)
+
+    def _restore(self, before: dict, edits: Sequence[Edit]) -> bool:
+        """Put back the attributes ``edits`` touched. Returns whether it worked.
+
+        Reached only when a pushed write failed its read-back. It cannot use
+        :meth:`apply` — that would recurse on the same failure — so it verifies
+        inline and reports rather than raising.
+
+        One asymmetry worth knowing: if the failed write *created* an LCSC field
+        where the footprint had none, restoring sets that field back to empty
+        rather than removing it. The board reads as unassigned either way, which
+        is what the snapshot promised; a stray empty field is not worth a second
+        way for this path to fail.
+        """
+        commit = self._begin()
+        try:
+            for edit in edits:
+                previous = before.get(edit.reference)
+                if previous is None:
+                    continue
+                target = self._live_footprint(edit.reference)
+                for attribute in edit.expect:
+                    self._mutator_for(
+                        edit.reference, attribute, getattr(previous, attribute)
+                    )(target)
+                self._commit(target)
+        except Exception:
+            self._drop(commit)
+            self._cache = None
+            log.exception("Could not put the previous values back")
+            return False
+
+        self._push(commit, "Undo the LCSC Suite write KiCad did not accept")
+        self._cache = None
+        after = {view.reference: view for view in self._read_footprints()}
+        return all(
+            getattr(after.get(edit.reference), attribute, None)
+            == getattr(previous, attribute)
+            for edit in edits
+            for attribute in edit.expect
+            if (previous := before.get(edit.reference)) is not None
+        )
+
+    def _mutator_for(self, reference: str, attribute: str, value):
+        """Return the mutator that sets one snapshot attribute back."""
+        if attribute == "lcsc":
+            return self._lcsc_mutator(reference, value)
+        return self._attribute_mutator(attribute, bool(value))
 
     # -- high-level write helpers ------------------------------------------
     #
@@ -671,6 +755,8 @@ class FixtureBoard(_Board):
         self._info = info
         self._honour = honour_footprint_writes
         self._draft: dict = {}
+        #: Staged by ``_commit``, made visible by ``_push``. See trap 4.
+        self._pending: dict = {}
         self.commits: list = []
 
     # -- construction -------------------------------------------------------
@@ -781,17 +867,28 @@ class FixtureBoard(_Board):
 
     def _begin(self):
         self._draft = {}
+        self._pending = {}
         return object()
 
     def _push(self, commit, message: str) -> None:
+        """Make the commit's changes visible — and not a moment sooner.
+
+        Trap 4: the real board answers reads from its committed state while a
+        commit is open, so the fixture does too. A fixture that is more
+        permissive than the API is a fixture that lets a bug through, which is
+        exactly what happened before this was modelled.
+        """
         self.commits.append(message)
+        self._committed.update(self._pending)
+        self._pending = {}
         self._draft = {}
 
     def _drop(self, commit) -> None:
+        self._pending = {}
         self._draft = {}
 
     def _commit(self, footprint) -> None:
-        """Copy a mutated footprint into the committed board — or not.
+        """Stage a mutated footprint for the open commit — or not.
 
         With ``honour_footprint_writes=False`` this does nothing at all while
         still returning normally, which is precisely what the real API does
@@ -804,7 +901,7 @@ class FixtureBoard(_Board):
             )
         if not self._honour:
             return
-        self._committed[footprint.reference] = copy.deepcopy(footprint)
+        self._pending[footprint.reference] = copy.deepcopy(footprint)
 
     # -- mutators -----------------------------------------------------------
 
@@ -830,6 +927,24 @@ class FixtureBoard(_Board):
 # ---------------------------------------------------------------------------
 # Connecting
 # ---------------------------------------------------------------------------
+
+
+def sanitize_lcsc(text: str) -> str:
+    """Pull an LCSC number out of whatever the user handed us, or return ``""``.
+
+    Mirrors ``mainwindow.sanitize_lcsc``: a clipboard rarely holds a bare
+    ``C1524``. It holds a product URL, a spreadsheet cell with a trailing tab, or
+    a line copied out of a datasheet — and all of those carry the number the user
+    meant. The first match wins, and it is upper-cased because that is the
+    spelling every store in this project persists.
+
+    Anything with no number in it at all returns ``""``, which every caller
+    treats as "do nothing" rather than as "clear the assignment". Clearing is
+    :meth:`_Board.set_lcsc` with an empty string, and a failed paste must never
+    be mistaken for one.
+    """
+    match = LCSC_SEARCH_PATTERN.search(text or "")
+    return match.group(0).upper() if match else ""
 
 
 def environment_report() -> dict:
@@ -901,4 +1016,5 @@ __all__ = [
     "environment_report",
     "open_fixture",
     "replace",
+    "sanitize_lcsc",
 ]

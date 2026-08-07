@@ -31,7 +31,7 @@ under `kicad_lcsc_suite/`) would be reformatted. Leave them alone.
 The UI is being rewritten as an out-of-process **PySide6** app driven over
 KiCad 10's IPC API. Read **[docs/QT_MIGRATION_PLAN.md](docs/QT_MIGRATION_PLAN.md)**
 before touching UI code — it carries the screen inventory, the phase order, and
-three IPC traps that each cost real time to find.
+four IPC traps that each cost real time to find.
 
 Which rules apply depends on which half you are in:
 
@@ -96,5 +96,9 @@ limitation is precisely what Qt fixes.
 
 `board.update_items(field)` returns success and **silently changes nothing**.
 Writes must target the parent footprint. Always assert by re-reading the
-board — a clean return value proves nothing. See the plan's §2 for all three
-traps.
+board — a clean return value proves nothing.
+
+**Re-read only after `push_commit`.** An open commit is invisible to a read, so
+verifying between `begin_commit()` and `push_commit()` compares against the old
+state and makes every write look like it failed. Push, then verify, then put the
+previous values back if it did not land. See the plan's §2 for all four traps.

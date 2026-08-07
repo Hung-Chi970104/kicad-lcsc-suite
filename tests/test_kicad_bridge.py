@@ -79,7 +79,7 @@ def test_silently_ignored_write_is_caught(trapped_board):
 
 
 def test_failed_verification_leaves_board_unchanged(trapped_board):
-    """A failed write drops its commit; the board must be untouched."""
+    """A failed write is put back; the board must read exactly as before."""
     before = {fp.reference: fp for fp in trapped_board.footprints()}
 
     with pytest.raises(bridge.WriteVerificationError):
@@ -87,7 +87,47 @@ def test_failed_verification_leaves_board_unchanged(trapped_board):
 
     after = {fp.reference: fp for fp in trapped_board.footprints(refresh=True)}
     assert after == before
-    assert trapped_board.commits == []
+
+
+def test_a_failed_write_costs_two_undo_entries(trapped_board):
+    """Trap 4's price, stated so a change to it is deliberate.
+
+    A read cannot see an open commit, so the write has to be pushed before it
+    can be verified — which means a failed one is undone by a *second* commit
+    rather than by dropping the first. The board ends up unchanged either way;
+    KiCad's undo history does not.
+    """
+    with pytest.raises(bridge.WriteVerificationError):
+        trapped_board.set_lcsc({"C1": "C111111"})
+
+    assert len(trapped_board.commits) == 2
+    assert "Undo" in trapped_board.commits[1]
+
+
+def test_a_failed_write_says_the_board_was_put_back(trapped_board):
+    """The user's next question is "what state is my board in now?"."""
+    with pytest.raises(bridge.WriteVerificationError) as raised:
+        trapped_board.set_lcsc({"C1": "C111111"})
+
+    assert "put back" in str(raised.value)
+
+
+def test_an_open_commit_is_not_visible_to_a_read(board):
+    """Trap 4 itself, in the fixture that has to reproduce it.
+
+    If this ever passes with the assertion inverted, the fixture has become more
+    permissive than the API and stops being evidence about it.
+    """
+    commit = board._begin()
+    footprint = board._live_footprint("C1")
+    board._lcsc_mutator("C1", "C111111")(footprint)
+    board._commit(footprint)
+
+    assert board.footprint("C1").lcsc != "C111111"
+
+    board._push(commit, "probe")
+    board.footprints(refresh=True)
+    assert board.footprint("C1").lcsc == "C111111"
 
 
 def test_edit_without_expectation_is_rejected():
