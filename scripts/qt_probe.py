@@ -159,14 +159,19 @@ def dump_table(view, label: str) -> None:
 
 def _main_window(context):
     """Build the main window against the probe's board and settings."""
-    from lcsc_suite.parts import PartList
+    from lcsc_suite.parts import PartList, open_fixture_library
     from lcsc_suite.ui.main_window import MainWindow
 
-    window = MainWindow(
-        context.board,
-        settings=context.settings,
-        parts=PartList(context.board, settings=context.settings),
+    parts = PartList(context.board, settings=context.settings)
+    # A throwaway data directory seeded from fixtures/part_details.json, never
+    # the developer's real part cache. Type / LCSC Params / JLC Stock are only
+    # evidence if they say the same thing on every machine — and the fixture
+    # deliberately leaves seven of its 29 numbers uncached so the "?" that means
+    # "nobody answered" appears in the same screenshot as real figures.
+    parts.library = open_fixture_library(
+        parts.owner, tempfile.mkdtemp(prefix="lcsc-probe-library-")
     )
+    window = MainWindow(context.board, settings=context.settings, parts=parts)
     window.show()
     return window
 

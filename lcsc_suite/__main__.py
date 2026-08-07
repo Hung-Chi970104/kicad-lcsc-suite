@@ -79,9 +79,11 @@ def main(argv=None) -> int:
     from .ui.main_window import MainWindow
 
     settings = Settings(legacy_path=legacy_settings_path())
-    window = MainWindow(
-        board, settings=settings, parts=PartList(board, settings=settings)
-    )
+    parts = PartList(board, settings=settings)
+    # The same data directory the wx plugin fills, so both halves read one part
+    # cache, one mappings table and one corrections database while they coexist.
+    parts.open_libraries()
+    window = MainWindow(board, settings=settings, parts=parts)
     guard.raise_requested.connect(window.raise_to_front)
     application.aboutToQuit.connect(guard.release)
     window.show()

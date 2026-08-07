@@ -56,6 +56,11 @@ def legacy(name: str) -> ModuleType:
 # ``lib/`` to sys.path and swallows the wx/pcbnew import it then attempts. That
 # is what makes this safe outside KiCad.
 
+# The toolkit-free half of dataview_highlight.py: which spellings count as the
+# same part (390R is 390Ω, 10uF is 10µF). NOT dataview_highlight itself — its
+# `try: import wx` succeeds against a partial stub and the renderer below it
+# then fails, which is exactly what a test suite produces.
+highlight_terms = legacy("highlight_terms")
 derive_params = legacy("derive_params")
 dblib = legacy("dblib")
 library = legacy("library")
@@ -82,6 +87,7 @@ __all__ = [
     "dblib",
     "derive_params",
     "enrichment_providers",
+    "highlight_terms",
     "lcsc_api",
     "lcsc_details",
     "lcsc_importer",

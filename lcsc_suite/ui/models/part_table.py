@@ -85,6 +85,11 @@ SORT_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 #: caring which column was clicked.
 REFERENCE_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 
+#: Custom role: the terms the LCSC Params cell should highlight. Exposed as a
+#: role rather than recomputed in the delegate so the model stays the one place
+#: that knows what a row contains.
+MATCH_TERMS_ROLE = int(Qt.ItemDataRole.UserRole) + 3
+
 
 @dataclass
 class PartRow:
@@ -202,6 +207,10 @@ class PartTableModel(QAbstractTableModel):
             return self._sort_key(row, column)
         if role == REFERENCE_ROLE:
             return row.reference
+        if role == MATCH_TERMS_ROLE:
+            # Only the one column the delegate paints; everywhere else this is
+            # None so a stray delegate cannot start highlighting a whole row.
+            return list(row.match_terms) if column == PARAMS else None
         if role == Qt.ItemDataRole.TextAlignmentRole:
             return self._alignment(column)
         if role == Qt.ItemDataRole.ForegroundRole:

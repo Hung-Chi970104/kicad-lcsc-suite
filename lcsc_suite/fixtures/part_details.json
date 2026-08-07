@@ -1,0 +1,222 @@
+[
+  {
+    "category": "Resistors",
+    "description": "-55\u2103~+155\u2103 1k\u03a9 50V 62.5mW Thick Film Resistor \u00b11% \u00b1100ppm/\u2103 0402 Chip Resistor - Surface Mount ROHS",
+    "lcsc": "C11702",
+    "package": "0402",
+    "part_no": "0402WGF1001TCE",
+    "price": "1-999:0.009800,1000-2999:0.008900,3000-9999:0.008500,10000-49999:0.008200,50000-99999:0.007900,100000-:0.007800",
+    "stock": "9796612",
+    "type": "Basic"
+  },
+  {
+    "category": "Resistors",
+    "description": "-55\u2103~+155\u2103 1W 200V 50m\u03a9 Thick Film Resistor \u00b11% \u00b1800ppm/\u2103 2512 Chip Resistor - Surface Mount ROHS",
+    "lcsc": "C127698",
+    "package": "2512",
+    "part_no": "25121WF500MT4E",
+    "price": "1-99:0.082700,100-299:0.074000,300-999:0.069800,1000-3999:0.066500,4000-7999:0.063000,8000-:0.061700",
+    "stock": "145846",
+    "type": "Extended"
+  },
+  {
+    "category": "Capacitors",
+    "description": "10uF 50V X5R \u00b110% 1206 Multilayer Ceramic Capacitors MLCC - SMD/SMT ROHS",
+    "lcsc": "C13585",
+    "package": "1206",
+    "part_no": "CL31A106KBHNNNE",
+    "price": "1-199:0.321000,200-599:0.251300,600-1999:0.217400,2000-9999:0.187100,10000-19999:0.178700,20000-:0.173700",
+    "stock": "4665998",
+    "type": "Basic"
+  },
+  {
+    "category": "Power Management (PMIC)",
+    "description": "HTSSOP-28-EP-4.5mm Power Management - Specialized ROHS",
+    "lcsc": "C143387",
+    "package": "HTSSOP-28-EP-4.5mm",
+    "part_no": "MAX1968EUI+T",
+    "price": "1-9:25.321800,10-29:23.129000,30-99:21.641300,100-101:20.342300,102-103:20.342300,104-:20.342300",
+    "stock": "1252",
+    "type": "Extended"
+  },
+  {
+    "category": "Capacitors",
+    "description": "10nF 50V X7R \u00b110% 0402 Multilayer Ceramic Capacitors MLCC - SMD/SMT ROHS",
+    "lcsc": "C15195",
+    "package": "0402",
+    "part_no": "CL05B103KB5NNNC",
+    "price": "1-999:0.005300,1000-2999:0.004100,3000-9999:0.003600,10000-49999:0.003200,50000-99999:0.003100,100000-:0.003000",
+    "stock": "10606704",
+    "type": "Basic"
+  },
+  {
+    "category": "Capacitors",
+    "description": "100nF 16V X7R \u00b110% 0402 Multilayer Ceramic Capacitors MLCC - SMD/SMT ROHS",
+    "lcsc": "C1525",
+    "package": "0402",
+    "part_no": "CL05B104KO5NNNC",
+    "price": "1-999:0.005400,1000-2999:0.004200,3000-9999:0.003600,10000-49999:0.003200,50000-99999:0.003100,100000-:0.003000",
+    "stock": "46563218",
+    "type": "Basic"
+  },
+  {
+    "category": "Capacitors",
+    "description": "1uF 50V X5R \u00b110% 0603 Multilayer Ceramic Capacitors MLCC - SMD/SMT ROHS",
+    "lcsc": "C15849",
+    "package": "0603",
+    "part_no": "CL10A105KB8NNNC",
+    "price": "1-499:0.075600,500-1499:0.069600,1500-3999:0.067000,4000-23999:0.064900,24000-47999:0.064300,48000-:0.063600",
+    "stock": "15874471",
+    "type": "Basic"
+  },
+  {
+    "category": "Resistors",
+    "description": "-55\u2103~+155\u2103 125mW 150V 1k\u03a9 Thick Film Resistor \u00b11% \u00b1100ppm/\u2103 0805 Chip Resistor - Surface Mount ROHS",
+    "lcsc": "C17513",
+    "package": "0805",
+    "part_no": "0805W8F1001T5E",
+    "price": "1-999:0.016300,1000-4999:0.014800,5000-9999:0.013800,10000-49999:0.013200,50000-99999:0.013000,100000-:0.012900",
+    "stock": "13012294",
+    "type": "Basic"
+  },
+  {
+    "category": "Resistors",
+    "description": "-55\u2103~+155\u2103 125mW 150V 4.7k\u03a9 Thick Film Resistor \u00b11% \u00b1100ppm/\u2103 0805 Chip Resistor - Surface Mount ROHS",
+    "lcsc": "C17673",
+    "package": "0805",
+    "part_no": "0805W8F4701T5E",
+    "price": "1-999:0.011000,1000-4999:0.009700,5000-9999:0.009100,10000-49999:0.008700,50000-99999:0.008500,100000-:0.008400",
+    "stock": "7394097",
+    "type": "Basic"
+  },
+  {
+    "category": "Optoelectronics",
+    "description": "-40\u2103~+85\u2103 100mW 120\u00b0 2.6V~3.1V 430mcd 513nm~528nm 525nm 5mA Discrete Diode Emerald Green Water Clear 0805 LED Indication - Discrete ROHS",
+    "lcsc": "C2297",
+    "package": "0805",
+    "part_no": "KT-0805G",
+    "price": "1-499:0.016200,500-2999:0.012600,3000-5999:0.010000,6000-23999:0.008800,24000-50999:0.008300,51000-:0.008000",
+    "stock": "2856111",
+    "type": "Basic"
+  },
+  {
+    "category": "Resistors",
+    "description": "-55\u2103~+155\u2103 100k\u03a9 50V 62.5mW Thick Film Resistor \u00b11% \u00b1100ppm/\u2103 0402 Chip Resistor - Surface Mount ROHS",
+    "lcsc": "C25741",
+    "package": "0402",
+    "part_no": "0402WGF1003TCE",
+    "price": "1-999:0.006500,1000-2999:0.005900,3000-9999:0.005500,10000-49999:0.005300,50000-50199:0.005100,50200-:0.005100",
+    "stock": "3281106",
+    "type": "Basic"
+  },
+  {
+    "category": "Resistors",
+    "description": "-55\u2103~+155\u2103 10k\u03a9 50V 62.5mW Thick Film Resistor \u00b11% \u00b1100ppm/\u2103 0402 Chip Resistor - Surface Mount ROHS",
+    "lcsc": "C25744",
+    "package": "0402",
+    "part_no": "0402WGF1002TCE",
+    "price": "1-999:0.011500,1000-2999:0.010600,3000-9999:0.010100,10000-49999:0.009700,50000-99999:0.009300,100000-:0.009100",
+    "stock": "2919020",
+    "type": "Basic"
+  },
+  {
+    "category": "Capacitors",
+    "description": "100V 100nF X7R \u00b110% 0805 Multilayer Ceramic Capacitors MLCC - SMD/SMT ROHS",
+    "lcsc": "C28233",
+    "package": "0805",
+    "part_no": "CL21B104KCFNNNE",
+    "price": "1-499:0.067000,500-1999:0.060200,2000-3999:0.056700,4000-23999:0.053800,24000-49999:0.052800,50000-:0.052200",
+    "stock": "3179282",
+    "type": "Basic"
+  },
+  {
+    "category": "Capacitors",
+    "description": "1uF 50V X7R \u00b110% 0805 Multilayer Ceramic Capacitors MLCC - SMD/SMT ROHS",
+    "lcsc": "C28323",
+    "package": "0805",
+    "part_no": "CL21B105KBFNNNE",
+    "price": "1-199:0.076700,200-599:0.067500,600-1999:0.062700,2000-9999:0.058800,10000-19999:0.057500,20000-:0.056500",
+    "stock": "6075629",
+    "type": "Basic"
+  },
+  {
+    "category": "Power Management (PMIC)",
+    "description": "-40\u2103~+125\u2103@(Tj) 1 10uVrms 140mV@(300mA) 3.3V 300mA 65dB@(100kHz) 6V 8.5uA Fixed Over Current Protection\u3001Short Circuit Protection\u3001Thermal shutdown\u3001Enable control\u3001Input under-voltage protection\u3001Output discharge\u3001Built-in soft-start Positive SOT-23-5 Voltage Regulators - Linear, Low Drop Out (LDO) Regulators ROHS",
+    "lcsc": "C2862740",
+    "package": "SOT-23-5",
+    "part_no": "TPS7A2033PDBVR",
+    "price": "1-49:0.231300,50-149:0.183400,150-499:0.160000,500-2999:0.139100,3000-5999:0.133300,6000-:0.129900",
+    "stock": "59085",
+    "type": "Extended"
+  },
+  {
+    "category": "Resistors",
+    "description": "-55\u2103~+155\u2103 100V 100mW 22k\u03a9 Thin Film Resistor \u00b10.1% \u00b15ppm/\u2103 0805 Chip Resistor - Surface Mount ROHS",
+    "lcsc": "C374726",
+    "package": "0805",
+    "part_no": "AR05BTS2202",
+    "price": "1-49:0.217100,50-149:0.174600,150-499:0.156400,500-2499:0.133700,2500-4999:0.116700,5000-:0.110600",
+    "stock": "13418",
+    "type": "Extended"
+  },
+  {
+    "category": "Switches",
+    "description": "-25\u2103~+70\u2103 10,000 cycles 100mA 12V 3.5mm 7.5mm 9.1mm Black Rectangular Columnar SMD(SMT) Tab SPDT Surface Mount, Right Angle SMD Slide Switches ROHS",
+    "lcsc": "C49023767",
+    "package": "SMD",
+    "part_no": "MST-12D18G4 SPDT Slide Switch",
+    "price": "1-49:0.082700,50-149:0.066500,150-999:0.058300,1000-1999:0.052300,2000-4999:0.047500,5000-:0.045100",
+    "stock": "21111",
+    "type": "Extended"
+  },
+  {
+    "category": "Diodes",
+    "description": "-65\u2103~+125\u2103 1 Independent 12A 1A 1mA@20V 20V 360mV@1A SOD-123F Schottky Diodes ROHS",
+    "lcsc": "C49231016",
+    "package": "SOD-123F",
+    "part_no": "MBR120VLSFT1G-TP",
+    "price": "1-49:0.112000,50-149:0.092300,150-499:0.082700,500-2999:0.075200,3000-5999:0.069400,6000-:0.066500",
+    "stock": "3528",
+    "type": "Extended"
+  },
+  {
+    "category": "Connectors",
+    "description": "2 2.54mm 64P Gold Right Angle \u5f2f\u63d2,P=2.54mm Board-to-Board and Backplane Connector ROHS",
+    "lcsc": "C698356",
+    "package": "Push-Pull,P=2.54mm",
+    "part_no": "09031646921",
+    "price": "1-9:3.077100,10-29:2.712500,30-99:2.485000,100-499:2.209000,500-999:2.104100,1000-:2.057400",
+    "stock": "2158",
+    "type": "Extended"
+  },
+  {
+    "category": "Inductors, Coils, Chokes",
+    "description": "3.3uH Wire-wound inductor \u00b120% SMD,6x6mm Power Inductors ROHS",
+    "lcsc": "C83456",
+    "package": "SMD,6x6mm",
+    "part_no": "SWPA6045S3R3MT",
+    "price": "1-99:0.071700,100-299:0.057200,300-1499:0.049900,1500-4499:0.043100,4500-10499:0.038800,10500-:0.036500",
+    "stock": "2012",
+    "type": "Extended"
+  },
+  {
+    "category": "Connectors",
+    "description": "-40\u2103~+105\u2103 1 14~30 18A 1x2P 2 2.5 250V 2P 5.08mm Green M2.5 Through Hole \u63d2\u4ef6,P=5.08mm Screw Terminal Blocks ROHS",
+    "lcsc": "C8465",
+    "package": "Plugin,P=5.08mm",
+    "part_no": "WJ500V-5.08-2P",
+    "price": "1-49:0.132700,50-149:0.106900,150-499:0.093600,500-2499:0.083300,2500-4999:0.079600,5000-:0.077000",
+    "stock": "322983",
+    "type": "Extended"
+  },
+  {
+    "category": "Data Acquisition",
+    "description": "-40\u2103~+105\u2103 19.2kHz 2.7V~3.6V 24 5uA 614.4kHz\u30012.4576MHz 8 Auto calibration\u3001Built-in temperature sensor\u3001Multiplexers\u3001Bipolar input\u3001Integrated modulator\u3001Built-in digital filter\u3001Bipolar power supply Built-in External\u3001Built-in SPI Sigma-Delta Support Yes LFCSP-32(5x5) Analog to Digital Converters (ADC) ROHS",
+    "lcsc": "C97314",
+    "package": "LFCSP-32(5x5)",
+    "part_no": "AD7124-8BCPZ",
+    "price": "1-9:9.918700,10-29:8.802100,30-99:7.721000,100-101:7.030400,102-103:7.030400,104-:7.030400",
+    "stock": "1142",
+    "type": "Extended"
+  }
+]
