@@ -746,6 +746,61 @@ Landed:
    reopened, so no write has yet gone over a real socket. Do this in Phase 3
    against a **copy** of a board in the scratchpad, never the user's own.
 
+### Repository reorganisation (between Phase 2 and Phase 3)
+
+Not a phase — a layout change made because the file paths in §3's tables were
+about to be typed a great many more times, and they were wrong in a way that
+cost real work.
+
+**The legacy plugin moved from the repository root into `kicad_lcsc_suite/`.**
+Everything §3 lists — the wx modules, the shared logic, `lcsc/`, `dblib/`,
+`bom_estimation/`, `enrichment/`, `icons/`, `lib/`, `VERSION` — is under that
+directory now. Prefix any path in §3 or §5 with it. `common/` went the other
+way, into `db_build/common/`, because the build Action is its only consumer.
+
+Why it was worth doing mid-migration:
+
+- **Three synthetic package names disappeared.** The root's directory name has
+  hyphens, so nothing could import it. `shared.py` faked a package with
+  `importlib`; the tests faked `kicadplugin`; `test_store_pad_filter.py` faked
+  `kicad_jlcpcb_tools`; ten files carried `sys.path` preambles. All of it is now
+  `import kicad_lcsc_suite.x` plus one line in `tests/conftest.py`.
+- **`install.sh` was symlinking the entire checkout** into KiCad's plugin
+  directory — `.venv/`, `docs/`, `tests/` and the Qt app included. It links one
+  package directory now, and `PCM/create_pcm_archive.sh` copies one directory
+  instead of enumerating files and dirs by hand.
+- **Phase 8 becomes a deletion** rather than an excavation: promote the surviving
+  logic modules into `lcsc_suite/`, then remove `kicad_lcsc_suite/`.
+
+Three things the move broke, all found and fixed — worth knowing because the
+same shapes will recur at Phase 8:
+
+1. **`__init__.py` imported the whole wx UI as a registration side effect.**
+   Harmless while the package could not be imported by name; once it could,
+   every logic import dragged in `mainwindow.py`. Registration is now guarded on
+   a *real* (file-backed) `pcbnew`, so a stub does not trigger it.
+2. **The icon path silently broke and nothing failed.** `icons.icon()` returns an
+   empty `QIcon` rather than raising, so every toolbar button lost its image and
+   the screenshots looked like a deliberate restyling. Caught by pixel-diffing
+   against the committed PNGs — 49% of pixels differed. `shared.LEGACY_ROOT` now
+   anchors the icon set and the wx settings file, `icons.py` logs loudly if the
+   directory is missing, and `test_every_toolbar_button_has_its_icon` fails if a
+   button renders bare.
+3. **Test isolation was accidental.** Each test file used to load its own copy of
+   a module under a private package name; sharing real modules exposed
+   import-time captures (`from pcbnew import GetBuildVersion`, `pcbnew.F_Cu`, the
+   stubbed `get_is_dnp`) that raced on collection order. Fixed by stubbing with
+   `setdefault` and pinning values on the imported module. All 512 tests now pass
+   forward, in reverse, **and one file at a time** — the last of which never
+   worked before.
+
+Screens were re-rendered and are pixel-identical to the Phase 2 commit apart
+from the log pane's timestamps, which are not deterministic between runs.
+
+`docs/CODE-REVIEW.md` is deliberately **not** updated: it records a review of a
+stated baseline (2026-08-03) and rewriting its paths would misrepresent what was
+reviewed.
+
 ### Resume here → Phase 3 and the rest
 
 Read this whole §10, then `git log --oneline` for the three phase commits. Every
@@ -772,8 +827,9 @@ House rules that have been followed so far and should keep being followed:
   an entry in `SCREENS` and CI covers it automatically. Give each screen fresh
   `probe_settings()` — the main window saves its geometry on close and the next
   screen would restore it.
-- `lcsc_suite/shared.py` is the only sanctioned way to import the repo-root logic
-  modules. Do not add `sys.path` hacks anywhere else.
+- `lcsc_suite/shared.py` is the only sanctioned way to import `kicad_lcsc_suite`'s
+  logic modules, and `shared.LEGACY_ROOT` the only way to reach its *data*
+  (`icons/`, the wx `settings.json`). Do not add `sys.path` hacks anywhere else.
 - `lcsc/api.py` is **copied, not edited**. If a UI need seems to require an API
   change, change the UI.
 - The fixture board (`lcsc_suite/fixtures/board.json`, derived from the real
@@ -782,11 +838,14 @@ House rules that have been followed so far and should keep being followed:
   appear at once. `FixtureBoard(honour_footprint_writes=False)` reproduces trap 2
   exactly and is how the read-back assertions are proved.
 - Run `.venv/bin/python -m pytest -q` at every phase boundary. It was 436 tests
-  at the start of the migration and is 512 now; nothing in it imports wx, so it
-  must stay green throughout.
+  at the start of the migration and is 512 now. Every file must also pass **on
+  its own** — the modules under test are shared, so a toolkit stub installed by
+  one file is visible to the next:
+  `for f in tests/test_*.py; do .venv/bin/python -m pytest -q "$f" >/dev/null || echo "FAILS ALONE: $f"; done`
 - `ruff check --extend-exclude=lib` must pass. `ruff format --check` still
   reports four **untouched upstream** files (`corrections.py`, `events.py`,
-  `kicad_drc.py`, `partdetails.py`) — leave them alone, as CLAUDE.md says.
+  `kicad_drc.py`, `partdetails.py`, now under `kicad_lcsc_suite/`) — leave them
+  alone, as CLAUDE.md says.
 - The legacy wx plugin stays installed and working until Phase 8.
   `./install.sh --list` shows both halves.
 

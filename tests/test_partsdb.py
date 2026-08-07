@@ -9,9 +9,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from common.partsdb import _CREATE_STATEMENTS, Generate, PartsDatabase
-from common.progress import NoOpProgressBar
-from common.translate import ComponentTranslator
+from db_build.common.partsdb import _CREATE_STATEMENTS, Generate, PartsDatabase
+from db_build.common.progress import NoOpProgressBar
+from db_build.common.translate import ComponentTranslator
 
 # ============================================================================
 # Pytest Fixtures
@@ -365,7 +365,7 @@ class TestPartsDatabase:
         assert output_db.exists()
         db.close_sqlite()
 
-    @patch("common.partsdb.FileManager")
+    @patch("db_build.common.partsdb.FileManager")
     def test_parts_database_split(self, mock_fm, temp_test_dir):
         """PartsDatabase calls FileManager to split database."""
         output_db = temp_test_dir / "test_parts.db"
@@ -397,11 +397,11 @@ class TestPartsDatabase:
         db2.close_sqlite()
 
         # Mock the split process so it doesn't actually run
-        with patch("common.partsdb.FileManager"):
+        with patch("db_build.common.partsdb.FileManager"):
             pass
 
-    @patch("common.partsdb.os.unlink")
-    @patch("common.partsdb.FileManager")
+    @patch("db_build.common.partsdb.os.unlink")
+    @patch("db_build.common.partsdb.FileManager")
     def test_parts_database_cleanup(self, mock_fm, mock_unlink, temp_test_dir):
         """PartsDatabase cleanup removes original database file."""
         output_db = temp_test_dir / "test_parts.db"
@@ -424,8 +424,8 @@ class TestPartsDatabase:
         assert db.skip_cleanup is True
         db.close_sqlite()
 
-    @patch("common.partsdb.os.unlink")
-    @patch("common.partsdb.FileManager")
+    @patch("db_build.common.partsdb.os.unlink")
+    @patch("db_build.common.partsdb.FileManager")
     def test_parts_database_post_build_builds_categories(
         self, mock_fm, mock_unlink, parts_database
     ):
@@ -546,7 +546,7 @@ class TestGenerate:
 
         assert gen.total_components == 100
 
-    @patch("common.partsdb.ComponentTranslator")
+    @patch("db_build.common.partsdb.ComponentTranslator")
     def test_generate_creates_translator_on_demand(
         self, mock_translator_class, parts_database
     ):

@@ -6,8 +6,8 @@
 #   app  the new out-of-process PySide6 application. Bootstraps a virtualenv,
 #        pip-installs PySide6 + kicad-python, and registers an IPC API plugin
 #        in  <kicad>/<ver>/plugins/lcsc_suite  so KiCad shows a toolbar button.
-#   wx   the legacy in-process wxPython plugin. Symlinks the checkout into
-#        <kicad>/<ver>/scripting/plugins/kicad_lcsc_suite. Removed at the
+#   wx   the legacy in-process wxPython plugin. Symlinks kicad_lcsc_suite/
+#        into <kicad>/<ver>/scripting/plugins/kicad_lcsc_suite. Removed at the
 #        migration's Phase 8 cutover; until then both can be installed at once
 #        and they do not collide.
 #
@@ -26,7 +26,7 @@
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Must be a valid Python identifier — the repo directory name has hyphens.
+# The plugin package directory, whose name is what KiCad imports it as.
 WX_LINK_NAME="kicad_lcsc_suite"
 APP_LINK_NAME="lcsc_suite"
 VENV="$SRC/.venv"
@@ -247,9 +247,9 @@ fi
 # --- the legacy wx plugin --------------------------------------------------
 
 if [ "$DO_WX" -eq 1 ]; then
-    link_or_die "$WX_TARGET" "$SRC"
+    link_or_die "$WX_TARGET" "$SRC/$WX_LINK_NAME"
     echo "Installed the legacy wx plugin"
-    echo "  source : $SRC"
+    echo "  source : $SRC/$WX_LINK_NAME"
     echo "  target : $WX_TARGET"
 fi
 

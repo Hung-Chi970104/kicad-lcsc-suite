@@ -1,39 +1,25 @@
 """Tests for writing assigned LCSC numbers back into ``.kicad_sch`` files."""
 
-import importlib.util
 from pathlib import Path
-import sys
-import types
-from unittest.mock import MagicMock
 
 import pytest
 
-_ROOT = Path(__file__).parent.parent
-
-# schematicexport imports GetBuildVersion from pcbnew at module scope; the
-# version it returns picks which of the three file-format paths runs.
-_pcbnew = MagicMock()
-_pcbnew.GetBuildVersion.return_value = "10.0.3"
-sys.modules["pcbnew"] = _pcbnew
-
-_pkg = types.ModuleType("kicadplugin")
-_pkg.__path__ = [str(_ROOT)]
-sys.modules["kicadplugin"] = _pkg
-
-_spec = importlib.util.spec_from_file_location(
-    "kicadplugin.schematicexport", _ROOT / "schematicexport.py"
+from kicad_lcsc_suite import schematicexport
+from kicad_lcsc_suite.schematicexport import (
+    SchematicExport,
+    find_root_schematic,
+    is_open_in_editor,
+    lock_file_for,
+    set_property_value,
 )
-assert _spec is not None and _spec.loader is not None
-_mod = importlib.util.module_from_spec(_spec)
-_mod.__package__ = "kicadplugin"
-sys.modules["kicadplugin.schematicexport"] = _mod
-_spec.loader.exec_module(_mod)  # type: ignore[union-attr]
 
-SchematicExport = _mod.SchematicExport
-find_root_schematic = _mod.find_root_schematic
-is_open_in_editor = _mod.is_open_in_editor
-lock_file_for = _mod.lock_file_for
-set_property_value = _mod.set_property_value
+# The version picks which of the three file-format branches runs. In KiCad it
+# comes from ``pcbnew.GetBuildVersion``, which schematicexport binds at import
+# time — so pin the bound name rather than stubbing ``sys.modules["pcbnew"]``.
+# Whichever test module imported schematicexport first would otherwise decide
+# this one's answer, and several of them install a bare ``MagicMock`` whose
+# version string is a mock the format check cannot compare.
+schematicexport.GetBuildVersion = lambda: "10.0.3"
 
 
 def symbol(reference: str, lcsc=None) -> str:

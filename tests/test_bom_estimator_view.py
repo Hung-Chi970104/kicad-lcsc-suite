@@ -1,10 +1,10 @@
 """Tests for BOM estimator presentation/view helpers."""
 
-from bom_estimation.pricing import (  # pylint: disable=import-error
+from kicad_lcsc_suite.bom_estimation.pricing import (  # pylint: disable=import-error
     BomEstimateSummary,
     calculate_part_bom_cost,
 )
-from bom_estimation.view import (  # pylint: disable=import-error
+from kicad_lcsc_suite.bom_estimation.view import (  # pylint: disable=import-error
     build_bom_estimate_view_model,
     build_standard_mode_context,
     format_bom_estimate_summary,

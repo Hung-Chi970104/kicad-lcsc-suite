@@ -11,42 +11,39 @@ described in https://github.com/Bouni/kicad-jlcpcb-tools/issues/755.
 """
 
 import csv
-import importlib.util
 import os
-from pathlib import Path
 import sys
 import tempfile
-import types
 from unittest.mock import MagicMock
 
-# ---------------------------------------------------------------------------
-# Bootstrap: load fabrication.py with mocked KiCad / wx dependencies
-# ---------------------------------------------------------------------------
-_ROOT = Path(__file__).parent.parent
+import pytest
 
+# ---------------------------------------------------------------------------
+# Bootstrap: fabrication.py imports pcbnew at module load, so stub it first.
+# That is why the import below is not at the top of the file.
+# ---------------------------------------------------------------------------
 for _mod in ["pcbnew", "wx", "wx.dataview"]:
     sys.modules.setdefault(_mod, MagicMock())
 
-_pkg = types.ModuleType("kicadplugin")
-_pkg.__path__ = [str(_ROOT)]
-sys.modules["kicadplugin"] = _pkg
-
-_footprint_helpers = types.ModuleType("kicadplugin.footprint_helpers")
-_footprint_helpers.get_is_dnp = lambda fp: False  # type: ignore[attr-defined]
-sys.modules["kicadplugin.footprint_helpers"] = _footprint_helpers
-
-_spec = importlib.util.spec_from_file_location(
-    "kicadplugin.fabrication", _ROOT / "fabrication.py"
+from kicad_lcsc_suite import fabrication  # noqa: E402
+from kicad_lcsc_suite.fabrication import (  # noqa: E402
+    _BOM_DESIGNATOR_MAX_LEN,
+    Fabrication,
+    split_bom_designators,
 )
-assert _spec is not None and _spec.loader is not None
-_fab_mod = importlib.util.module_from_spec(_spec)
-_fab_mod.__package__ = "kicadplugin"
-sys.modules["kicadplugin.fabrication"] = _fab_mod
-_spec.loader.exec_module(_fab_mod)  # type: ignore[union-attr]
 
-Fabrication = _fab_mod.Fabrication  # type: ignore[attr-defined]
-split_bom_designators = _fab_mod.split_bom_designators  # type: ignore[attr-defined]
-_BOM_DESIGNATOR_MAX_LEN = _fab_mod._BOM_DESIGNATOR_MAX_LEN  # type: ignore[attr-defined]
+
+@pytest.fixture(autouse=True)
+def _nothing_is_dnp(monkeypatch):
+    """Keep the fake footprints out of the "do not place" bucket.
+
+    ``get_is_dnp`` calls ``footprint.IsDNP()``, and on a ``MagicMock`` board
+    that returns a mock — which is truthy, so every part is silently dropped
+    and the BOM comes out empty. Patched through ``monkeypatch`` so it is undone
+    afterwards: ``fabrication`` is a real shared module now, not a per-test copy.
+    """
+    monkeypatch.setattr(fabrication, "get_is_dnp", lambda footprint: False)
+
 
 # ---------------------------------------------------------------------------
 # Unit tests for split_bom_designators()

@@ -5,7 +5,7 @@ from unittest import mock
 
 import pytest
 
-from common.jlcapi import ApiCategory, CategoryFetch, Component, JlcApi, LcscId
+from db_build.common.jlcapi import ApiCategory, CategoryFetch, Component, JlcApi, LcscId
 
 # ============================================================================
 # ApiCategory Tests
@@ -282,7 +282,7 @@ class TestJlcApi:
         assert "jlcpcb.com" in JlcApi.BASE_URL
         assert "smtGood" in JlcApi.BASE_URL
 
-    @mock.patch("common.jlcapi.requests.get")
+    @mock.patch("db_build.common.jlcapi.requests.get")
     def test_get_token_success(self, mock_get):
         """JlcApi.getToken fetches and returns XSRF token."""
         mock_response = mock.Mock()
@@ -296,7 +296,7 @@ class TestJlcApi:
         assert token == "test_token_123"
         mock_get.assert_called_once()
 
-    @mock.patch("common.jlcapi.requests.post")
+    @mock.patch("db_build.common.jlcapi.requests.post")
     def test_component_list_success(self, mock_post):
         """JlcApi.componentList returns parsed JSON response."""
         response_data = {
@@ -313,7 +313,7 @@ class TestJlcApi:
         assert result == response_data
         mock_post.assert_called_once()
 
-    @mock.patch("common.jlcapi.requests.post")
+    @mock.patch("db_build.common.jlcapi.requests.post")
     def test_component_list_http_error(self, mock_post):
         """JlcApi.componentList raises on non-200 status."""
         mock_response = mock.Mock()
@@ -324,7 +324,7 @@ class TestJlcApi:
         with pytest.raises(RuntimeError, match="Cannot fetch component list"):
             JlcApi.componentList("token123", {})
 
-    @mock.patch("common.jlcapi.requests.post")
+    @mock.patch("db_build.common.jlcapi.requests.post")
     def test_component_list_api_error_no_data(self, mock_post):
         """JlcApi.componentList returns empty dict for certain error codes."""
         response_data = {"code": 563, "message": "Error"}
@@ -336,7 +336,7 @@ class TestJlcApi:
         result = JlcApi.componentList("token123", {})
         assert result == {}
 
-    @mock.patch("common.jlcapi.requests.post")
+    @mock.patch("db_build.common.jlcapi.requests.post")
     def test_component_list_api_error_rate_limit(self, mock_post):
         """JlcApi.componentList returns empty dict for rate limit error (429)."""
         response_data = {"code": 429, "message": "Too Many Requests"}
@@ -348,7 +348,7 @@ class TestJlcApi:
         result = JlcApi.componentList("token123", {})
         assert result == {}
 
-    @mock.patch("common.jlcapi.requests.post")
+    @mock.patch("db_build.common.jlcapi.requests.post")
     def test_component_list_api_error_not_found(self, mock_post):
         """JlcApi.componentList returns empty dict for 404 error."""
         response_data = {"code": 404, "message": "Not Found"}
@@ -360,7 +360,7 @@ class TestJlcApi:
         result = JlcApi.componentList("token123", {})
         assert result == {}
 
-    @mock.patch("common.jlcapi.requests.post")
+    @mock.patch("db_build.common.jlcapi.requests.post")
     def test_component_list_other_error_raises(self, mock_post):
         """JlcApi.componentList raises for other error codes."""
         response_data = {"code": 400, "message": "Bad Request"}
@@ -433,7 +433,7 @@ class TestJlcApi:
 class TestCategoryFetch:
     """Tests for CategoryFetch class."""
 
-    @mock.patch("common.jlcapi.JlcApi.getToken")
+    @mock.patch("db_build.common.jlcapi.JlcApi.getToken")
     def test_category_fetch_init(self, mock_get_token):
         """CategoryFetch initializes with category and settings."""
         mock_get_token.return_value = "test_token"
@@ -447,7 +447,7 @@ class TestCategoryFetch:
         assert fetch.currentPage == 1
         assert fetch.instockOnly is True
 
-    @mock.patch("common.jlcapi.JlcApi.getToken")
+    @mock.patch("db_build.common.jlcapi.JlcApi.getToken")
     def test_category_fetch_builds_request_with_secondary(self, mock_get_token):
         """CategoryFetch builds request with secondary category."""
         mock_get_token.return_value = "test_token"
@@ -459,8 +459,8 @@ class TestCategoryFetch:
 
         # The request should include both primary and secondary
 
-    @mock.patch("common.jlcapi.JlcApi.getToken")
-    @mock.patch("common.jlcapi.JlcApi.componentList")
+    @mock.patch("db_build.common.jlcapi.JlcApi.getToken")
+    @mock.patch("db_build.common.jlcapi.JlcApi.componentList")
     def test_category_fetch_collapsed_category(
         self, mock_component_list, mock_get_token
     ):
@@ -475,8 +475,8 @@ class TestCategoryFetch:
         # Should have made at least one API call
         assert mock_component_list.call_count >= 1
 
-    @mock.patch("common.jlcapi.JlcApi.getToken")
-    @mock.patch("common.jlcapi.JlcApi.componentList")
+    @mock.patch("db_build.common.jlcapi.JlcApi.getToken")
+    @mock.patch("db_build.common.jlcapi.JlcApi.componentList")
     def test_category_fetch_single_page(self, mock_component_list, mock_get_token):
         """CategoryFetch.fetchAll yields single page when components fit."""
         mock_get_token.return_value = "test_token"
@@ -494,8 +494,8 @@ class TestCategoryFetch:
         assert len(pages) == 1
         assert pages[0] == components_page1
 
-    @mock.patch("common.jlcapi.JlcApi.getToken")
-    @mock.patch("common.jlcapi.JlcApi.componentList")
+    @mock.patch("db_build.common.jlcapi.JlcApi.getToken")
+    @mock.patch("db_build.common.jlcapi.JlcApi.componentList")
     def test_category_fetch_multiple_pages(self, mock_component_list, mock_get_token):
         """CategoryFetch.fetchAll yields multiple pages."""
         mock_get_token.return_value = "test_token"
@@ -518,8 +518,8 @@ class TestCategoryFetch:
         assert pages[0] == page1
         assert pages[1] == page2
 
-    @mock.patch("common.jlcapi.JlcApi.getToken")
-    @mock.patch("common.jlcapi.JlcApi.componentList")
+    @mock.patch("db_build.common.jlcapi.JlcApi.getToken")
+    @mock.patch("db_build.common.jlcapi.JlcApi.componentList")
     def test_category_fetch_empty_result(self, mock_component_list, mock_get_token):
         """CategoryFetch.fetchAll handles empty response."""
         mock_get_token.return_value = "test_token"
@@ -531,8 +531,8 @@ class TestCategoryFetch:
         pages = list(fetch.fetchAll())
         assert len(pages) == 0
 
-    @mock.patch("common.jlcapi.JlcApi.getToken")
-    @mock.patch("common.jlcapi.JlcApi.componentList")
+    @mock.patch("db_build.common.jlcapi.JlcApi.getToken")
+    @mock.patch("db_build.common.jlcapi.JlcApi.componentList")
     def test_category_fetch_tracks_page_number(
         self, mock_component_list, mock_get_token
     ):

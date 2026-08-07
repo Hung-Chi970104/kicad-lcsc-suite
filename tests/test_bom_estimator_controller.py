@@ -9,37 +9,35 @@ These tests inject fakes for every callback the controller depends on,
 so each scenario is observable without touching real UI or board state.
 """
 
-from pathlib import Path
 import sys
-import types
 from unittest.mock import MagicMock
 
 # ---------------------------------------------------------------------------
-# Bootstrap: stub KiCad / wx modules and load bom_widget under a fake package.
+# Bootstrap: stub the KiCad / wx modules bom_widget imports at module load. They
+# have to be in place before the import below, which is why it is not at the top
+# of the file.
 # ---------------------------------------------------------------------------
-_ROOT = Path(__file__).parent.parent
-
-_pcbnew_stub = sys.modules.setdefault("pcbnew", MagicMock())
-# Force-set F_Cu even if pcbnew was already stubbed by an earlier test —
-# bom_widget._is_on_bottom_side compares against this sentinel.
-_pcbnew_stub.F_Cu = 0
+sys.modules.setdefault("pcbnew", MagicMock())
 for _mod in ["wx", "wx.dataview"]:
     sys.modules.setdefault(_mod, MagicMock())
 
-_pkg_name = "kicadplugin"
-if _pkg_name not in sys.modules:
-    _pkg = types.ModuleType(_pkg_name)
-    _pkg.__path__ = [str(_ROOT)]
-    sys.modules[_pkg_name] = _pkg
+import pytest  # noqa: E402
 
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+from kicad_lcsc_suite import bom_widget  # noqa: E402
 
-# Load bom_widget under the kicadplugin namespace so its relative imports work.
-import importlib  # noqa: E402
-
-bom_widget = importlib.import_module("kicadplugin.bom_widget")
 BomEstimatorController = bom_widget.BomEstimatorController
+
+
+@pytest.fixture(autouse=True)
+def _front_copper_is_layer_zero():
+    """Pin ``pcbnew.F_Cu``, which decides which side a footprint is on.
+
+    ``_is_on_bottom_side`` reads it off the module at call time, so it has to be
+    a real int by then — against a bare mock every footprint compares unequal
+    and reads as bottom-side. Set per test rather than at import: another test
+    module may replace ``sys.modules["pcbnew"]`` wholesale after this one loads.
+    """
+    sys.modules["pcbnew"].F_Cu = 0
 
 
 # ---------------------------------------------------------------------------

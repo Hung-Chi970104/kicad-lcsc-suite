@@ -9,7 +9,11 @@ import time
 
 import pytest
 
-from common.componentdb import _CREATE_STATEMENTS, ComponentsDatabase, fixDescription
+from db_build.common.componentdb import (
+    _CREATE_STATEMENTS,
+    ComponentsDatabase,
+    fixDescription,
+)
 
 # ============================================================================
 # Fixtures

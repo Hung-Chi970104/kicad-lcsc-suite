@@ -14,30 +14,17 @@ from pathlib import Path
 import sqlite3
 import sys
 import time
-import types
 from unittest.mock import MagicMock
 
-_ROOT = Path(__file__).parent.parent
-
-# library.py imports wx and requests at module load; neither is reached by the
-# cache code paths, so stubs are enough. Same bootstrap as the other tests.
+# library.py imports requests at module load; the cache code paths never reach
+# it, so a stub is enough. It has to be in place before the import below, which
+# is why that one is not at the top of the file.
 for _mod in ["wx", "wx.dataview", "requests"]:
     sys.modules.setdefault(_mod, MagicMock())
 
-_pkg_name = "kicadplugin"
-if _pkg_name not in sys.modules:
-    _pkg = types.ModuleType(_pkg_name)
-    _pkg.__path__ = [str(_ROOT)]
-    sys.modules[_pkg_name] = _pkg
-
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-import importlib  # noqa: E402
-
 import pytest  # noqa: E402
 
-library_module = importlib.import_module("kicadplugin.library")
+from kicad_lcsc_suite import library as library_module  # noqa: E402
 
 
 class _FakeParent:

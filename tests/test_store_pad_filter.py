@@ -1,56 +1,34 @@
 """Tests for store pad filtering helpers used by BOM estimator metadata."""
 
 import contextlib
-import importlib.util
 import logging
-from pathlib import Path
 import sqlite3
 import sys
 import types
 
-# Provide minimal wx stubs so root-level helpers/store imports succeed in tests.
+# store.py reaches helpers.py, which imports wx. Stubs are enough — nothing the
+# pad filter touches goes near the toolkit — but they have to be installed
+# before the imports below, which is why those are not at the top of the file.
 if "wx" not in sys.modules:
     sys.modules["wx"] = types.ModuleType("wx")
 if "wx.dataview" not in sys.modules:
     sys.modules["wx.dataview"] = types.ModuleType("wx.dataview")
 
-ROOT = Path(__file__).parent.parent
-PACKAGE = "kicad_jlcpcb_tools"
-
-if PACKAGE not in sys.modules:
-    pkg = types.ModuleType(PACKAGE)
-    pkg.__path__ = [str(ROOT)]
-    sys.modules[PACKAGE] = pkg
-
-
-def _load_root_module(name):
-    """Load a root module as part of a synthetic package for relative imports."""
-    module_name = f"{PACKAGE}.{name}"
-    if module_name in sys.modules:
-        return sys.modules[module_name]
-
-    spec = importlib.util.spec_from_file_location(module_name, str(ROOT / f"{name}.py"))
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load module spec for {module_name}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-store_module = _load_root_module("store")
-footprint_metadata_module = _load_root_module("footprint_metadata")
-Store = store_module.Store
-count_pad = footprint_metadata_module.count_pad
-get_footprint_pad_count = footprint_metadata_module.get_footprint_pad_count
-get_footprint_pads = footprint_metadata_module.get_footprint_pads
-footprint_has_tht = footprint_metadata_module.footprint_has_tht
-
-# Imported here for the round-trip test below; the import sits below the
-# package bootstrap so bom_estimation resolves correctly.
-from bom_estimation.pricing import (  # noqa: E402  pylint: disable=wrong-import-position,import-error
+from kicad_lcsc_suite import (  # noqa: E402
+    footprint_metadata as footprint_metadata_module,
+    store as store_module,  # noqa: E402
+)
+from kicad_lcsc_suite.bom_estimation.pricing import (  # noqa: E402
     get_assembly_flags as parse_assembly_flags,
 )
+from kicad_lcsc_suite.footprint_metadata import (  # noqa: E402
+    count_pad,
+    footprint_has_tht,
+    get_footprint_pad_count,
+    get_footprint_pads,
+)
+
+Store = store_module.Store
 
 
 class _Drill:

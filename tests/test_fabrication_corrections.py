@@ -1,36 +1,16 @@
 """Tests for the two-pass correction matching logic in Fabrication._find_correction."""
 
-import importlib.util
-from pathlib import Path
 import sys
-import types
 from unittest.mock import MagicMock
 
-_ROOT = Path(__file__).parent.parent
-
-# Mock KiCad modules before importing fabrication
+# fabrication.py imports pcbnew at module load. Stub it before the import below,
+# which is why that one is not at the top of the file. ``setdefault``, not
+# assignment: any stub will do here, and replacing one another test module
+# already installed would discard the attributes it configured on it.
 for _mod in ["pcbnew", "wx", "wx.dataview"]:
-    sys.modules[_mod] = MagicMock()
+    sys.modules.setdefault(_mod, MagicMock())
 
-# fabrication.py uses relative imports, so give it a fake parent package
-_pkg = types.ModuleType("kicadplugin")
-_pkg.__path__ = [str(_ROOT)]
-sys.modules["kicadplugin"] = _pkg
-
-_footprint_helpers = types.ModuleType("kicadplugin.footprint_helpers")
-_footprint_helpers.get_is_dnp = lambda fp: False  # type: ignore[attr-defined]
-sys.modules["kicadplugin.footprint_helpers"] = _footprint_helpers
-
-_spec = importlib.util.spec_from_file_location(
-    "kicadplugin.fabrication", _ROOT / "fabrication.py"
-)
-assert _spec is not None and _spec.loader is not None
-_fab_mod = importlib.util.module_from_spec(_spec)
-_fab_mod.__package__ = "kicadplugin"
-sys.modules["kicadplugin.fabrication"] = _fab_mod
-_spec.loader.exec_module(_fab_mod)  # type: ignore[union-attr]
-
-Fabrication = _fab_mod.Fabrication  # type: ignore[attr-defined]
+from kicad_lcsc_suite.fabrication import Fabrication  # noqa: E402
 
 
 def make_fab(corrections):

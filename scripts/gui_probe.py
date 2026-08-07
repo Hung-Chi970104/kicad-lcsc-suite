@@ -24,54 +24,42 @@ shells do not have, so assert on geometry and state, never on screenshots.
 
 import argparse
 import dataclasses
-import importlib.util
 import os
 import sys
 import tempfile
 import time
 import traceback
 
-# The checkout directory name contains hyphens, so it is not importable as a
-# package. Import through the installed symlink (install.sh creates it as
-# `kicad_lcsc_suite`), falling back to a temporary alias if not installed.
-_HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+#: Repository root — the directory the plugin package lives in.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _add_package_to_path() -> None:
-    """Make ``kicad_lcsc_suite`` importable however this checkout is set up."""
-    candidates = []
-    kicad_docs = os.path.expanduser("~/Documents/KiCad")
-    if os.path.isdir(kicad_docs):
-        for version in sorted(os.listdir(kicad_docs), reverse=True):
-            candidates.append(os.path.join(kicad_docs, version, "scripting", "plugins"))
-    xdg = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-    kicad_xdg = os.path.join(xdg, "kicad")
-    if os.path.isdir(kicad_xdg):
-        for version in sorted(os.listdir(kicad_xdg), reverse=True):
-            candidates.append(os.path.join(kicad_xdg, version, "scripting", "plugins"))
+    """Make ``kicad_lcsc_suite`` importable from this checkout.
 
-    for plugin_dir in candidates:
-        link = os.path.join(plugin_dir, "kicad_lcsc_suite")
-        if os.path.exists(link) and os.path.realpath(link) == os.path.realpath(_HERE):
-            sys.path.insert(0, plugin_dir)
-            return
+    The repository root is its parent directory, so putting that on the path is
+    the whole job — the probe reads the working tree, not whatever happens to be
+    installed in KiCad's plugin folder, which is what you want when the point is
+    to look at the change you just made.
 
-    # Not installed (or installed from a different checkout): alias this
-    # directory under an importable name for the duration of the probe.
-    spec = importlib.util.spec_from_file_location(
-        "kicad_lcsc_suite",
-        os.path.join(_HERE, "__init__.py"),
-        submodule_search_locations=[_HERE],
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["kicad_lcsc_suite"] = module
-    spec.loader.exec_module(module)
+    This used to hunt KiCad's plugin directories for a symlink back to here and
+    fall back to aliasing the repository root under an importable name, because
+    the plugin *was* the root and a directory called ``kicad-lcsc-suite`` cannot
+    be imported. Giving it a real package directory retired all of that.
+    """
+    if _REPO_ROOT not in sys.path:
+        sys.path.insert(0, _REPO_ROOT)
 
 
 _add_package_to_path()
 
-# Import plugin modules BEFORE creating wx.App: __init__.py calls
-# JLCPCBPlugin().register(), which asserts on PgmOrNull() outside KiCad.
+import wx  # noqa: E402
+import wx.dataview as dv  # noqa: E402
+
+# The plugin modules are imported BEFORE any wx.App is created: importing the
+# package calls JLCPCBPlugin().register(), which asserts on PgmOrNull() outside
+# KiCad. Ruff sorts them below wx because the package is first-party; the order
+# that matters is these against the wx.App below, not against each other.
 from kicad_lcsc_suite import helpers, standalone_impl  # noqa: E402
 from kicad_lcsc_suite.datamodel import (  # noqa: E402
     PartListDataModel,
@@ -92,8 +80,6 @@ from kicad_lcsc_suite.schematicimport import (  # noqa: E402
     read_schematic,
 )
 from kicad_lcsc_suite.settings import SettingsDialog  # noqa: E402
-import wx  # noqa: E402
-import wx.dataview as dv  # noqa: E402
 
 
 class StubParent(wx.Dialog):

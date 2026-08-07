@@ -3,13 +3,16 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "Kicad-jlcpcb-tools"
-version = "2025.09.02"
+name = "kicad-lcsc-suite"
+# The distributable here is the db_build pipeline, not the plugin: the plugin
+# is installed by install.sh or shipped through PCM, and carries its own
+# version in kicad_lcsc_suite/VERSION.
+version = "0.1.0"
 license = "MIT"
-description = "Plugin to generate BOM + CPL files for JLCPCB."
+description = "LCSC/JLCPCB part assignment and library import for KiCad."
 readme = "README.md"
 requires-python = ">=3.10"
-keywords = ["kicad", "jlcpcb", "electronics", "pcb", "bom", "cpl"]
+keywords = ["kicad", "lcsc", "jlcpcb", "electronics", "pcb", "bom", "cpl"]
 classifiers = [
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
@@ -36,12 +39,15 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/bouni/kicad-jlcpcb-tools"
-Repository = "https://github.com/bouni/kicad-jlcpcb-tools.git"
-Issues = "https://github.com/bouni/kicad-jlcpcb-tools/issues"
+Homepage = "https://github.com/Hung-Chi970104/kicad-lcsc-suite"
+Repository = "https://github.com/Hung-Chi970104/kicad-lcsc-suite.git"
+Issues = "https://github.com/Hung-Chi970104/kicad-lcsc-suite/issues"
+Upstream = "https://github.com/bouni/kicad-jlcpcb-tools"
 
 [tool.setuptools]
-packages = ["db_build", "common"]
+# db_build.common moved under db_build/, which owns it; the two plugin
+# packages are installed by install.sh, not by pip.
+packages = ["db_build", "db_build.common"]
 
 [tool.ruff.lint]
 
@@ -146,7 +152,9 @@ ignore = [
 
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "common", "dblib"]
+# One place now. tests/conftest.py puts the repository root on sys.path, which
+# is all any of them need to import kicad_lcsc_suite, lcsc_suite or db_build.
+testpaths = ["tests"]
 
 [tool.ruff.lint.flake8-pytest-style]
 fixture-parentheses = false
@@ -158,12 +166,10 @@ split-on-trailing-comma = false
 
 [tool.ruff.lint.per-file-ignores]
 "db_build/jlcparts_db_convert.py" = ["T201"]
-"common/filemgr.py" = ["T201"]
-"common/partsdb.py" = ["T201"]
-"common/progress.py" = ["T201"]
-# A standalone CLI diagnostic — printing to the terminal is its whole job.
-"selfcheck.py" = ["T201"]
-# Same: a CLI dev tool whose output is the report it prints.
+"db_build/common/filemgr.py" = ["T201"]
+"db_build/common/partsdb.py" = ["T201"]
+"db_build/common/progress.py" = ["T201"]
+# A CLI dev tool whose output is the report it prints.
 "scripts/gui_probe.py" = ["T201"]
 # The Qt migration's acceptance tool. Same deal — its report *is* its output —
 # plus it must set QT_QPA_PLATFORM before importing Qt, so its imports cannot
@@ -181,7 +187,13 @@ split-on-trailing-comma = false
 "lcsc_suite/__main__.py" = ["PLC0415"]
 "lcsc_suite/config.py" = ["PLC0415"]
 # The wx import is the fallback branch of a toolkit-agnostic dispatcher.
-"events.py" = ["PLC0415"]
+"kicad_lcsc_suite/events.py" = ["PLC0415"]
+# The pcbnew probe that decides whether to register the toolbar action has
+# to be a function-level import; at module level it would defeat the guard.
+"kicad_lcsc_suite/__init__.py" = ["PLC0415"]
+# Toolkit stubs must be installed before the module under test is imported,
+# so these files cannot have all their imports at the top.
+"tests/*" = ["E402"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 25

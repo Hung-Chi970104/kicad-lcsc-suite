@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from common.filemgr import FileManager
+from db_build.common.filemgr import FileManager
 
 
 @pytest.fixture

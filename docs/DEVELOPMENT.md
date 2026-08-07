@@ -15,7 +15,7 @@ This trips people up constantly. You need both.
 
 | | Interpreter | Used for |
 |---|---|---|
-| **Dev** | any Python ≥3.10 venv | `pytest`, `ruff`, the `db_build`/`common` tooling |
+| **Dev** | any Python ≥3.10 venv | `pytest`, `ruff`, the `db_build` tooling |
 | **Runtime** | KiCad's bundled Python **3.9** | anything that imports `wx` or `pcbnew`, and every GUI probe |
 
 KiCad's Python:
@@ -56,20 +56,34 @@ a rule violation ([AGENTS.md](../AGENTS.md#hard-rules)).
 ## 3. Tests
 
 ```bash
-.venv/bin/python -m pytest          # 311 passed in ~4s
-.venv/bin/python -m pytest -q common/test_bom_estimator.py
+.venv/bin/python -m pytest          # 512 passed in ~7s
+.venv/bin/python -m pytest -q tests/test_bom_estimator.py
 .venv/bin/python -m pytest -q -k "stock or retail"
 ```
 
-`testpaths` is `["tests", "common", "dblib"]` (pyproject.toml) — note that
-**most tests live next to the code in `common/`**, not in `tests/`.
-`common/conftest.py` puts the repo root on `sys.path` so test modules can
-import `bom_estimation`, `enrichment`, etc. without a path preamble.
+`testpaths` is `["tests"]` (pyproject.toml) — one directory, covering both
+halves. [tests/conftest.py](../tests/conftest.py) puts the repository root on
+`sys.path`, which is all a test needs to `import kicad_lcsc_suite`,
+`lcsc_suite` or `db_build` by name.
 
-Everything under test is deliberately wx-free: `bom_estimation/pricing.py`,
-`common/translate.py`, `dataview_highlight.py`, `fabrication.split_bom_designators`
-and friends. `events.py` falls back to a dummy event factory when wx is
-absent, which is what keeps the importing modules testable.
+**Every test file also passes on its own**, and that is worth preserving.
+Several import a wx-dependent module under a `MagicMock` toolkit, and because
+the modules are now shared rather than loaded per-file under a synthetic
+package name, one file's stub is visible to the next. Two rules keep that
+harmless: install stubs with `sys.modules.setdefault`, never by assignment;
+and if a test needs a *specific* value out of a stub, pin it on the imported
+module (`monkeypatch.setattr`, or an autouse fixture) rather than racing on
+who imports first. Check with:
+
+```bash
+for f in tests/test_*.py; do .venv/bin/python -m pytest -q "$f" >/dev/null || echo "FAILS ALONE: $f"; done
+```
+
+Everything under test is deliberately wx-free:
+`kicad_lcsc_suite/bom_estimation/pricing.py`, `db_build/common/translate.py`,
+`fabrication.split_bom_designators` and friends. `events.py` dispatches to a Qt
+sink or `wx.PostEvent` depending on the destination, which is what keeps the
+importing modules testable — and what lets `library.py` serve both halves.
 
 **There is no automated coverage of the wx dialogs.** That is what §5 is for.
 
@@ -89,7 +103,7 @@ will drown in noise from code you must not touch.
 
 **Pin ruff to 0.14.14**, the version in `.pre-commit-config.yaml`. Newer
 ruff (0.16.x) adds `PLR0917` and flags two pre-existing files
-(`common/test_componentdb.py`, `db_build/jlcparts_db_convert.py`), plus it
+(`tests/test_componentdb.py`, `db_build/jlcparts_db_convert.py`), plus it
 reformats differently. Chasing those is churn.
 
 **`ruff format --check` is not clean at HEAD.** Four untouched upstream
@@ -264,15 +278,18 @@ standalone mode breaks silently.
 
 ## 7. Environment diagnostics
 
+`selfcheck.py` was deleted — most of what it checked was fabrication
+readiness, which is now out of scope (see the migration plan's §1). Reachability
+is the part worth keeping, and it is one command:
+
 ```bash
-/Applications/KiCad/.../bin/python3 selfcheck.py            # includes network probes
-/Applications/KiCad/.../bin/python3 selfcheck.py --offline  # skip them
+curl -o /dev/null -w '%{http_code}\n' \
+  'https://wmsc.lcsc.com/ftps/wm/product/detail?productCode=C1592'
 ```
 
-Reports interpreter version, wx / `wx.svg` / `wx.dataview`, `pcbnew`, TLS
-trust, the vendored converter, and live reachability of both storefronts.
-Exits nonzero if something the plugin needs is missing. Run this first when
-a bug report says "stock shows `?`" or "previews are blank".
+A 403 there is normal and expected — LCSC refuses whole networks, which is
+exactly why retail stock falls back to EasyEDA and photos come from JLC's file
+service. JLCPCB's own endpoints are unaffected.
 
 ## 8. Databases while developing
 
@@ -303,7 +320,7 @@ Common failure signatures:
 | Dialog opens blank or half-built | a `wxAssertionError` aborted `_build_ui()` — check sizer alignment flags against orientation |
 | `RuntimeError` deep in the wx event loop | a `wx.CallAfter` landed on a destroyed window — missing `_alive()` guard |
 | Stale results overwrite fresh ones | missing staleness-token check (`_search_token` / `_detail_token` / `_retail_token` / `assembly_enrichment_generation`) |
-| Stock shows `?` | TLS trust — `selfcheck.py`, or set `LCSC_CA_BUNDLE` |
+| Stock shows `?` | TLS trust — set `LCSC_CA_BUNDLE` to a CA bundle |
 | Retail column stuck on `…` | LCSC detail endpoint unreachable or rate-limiting; **Refresh** retries |
 | Plugin missing from the menu | directory name has hyphens, or KiCad was not restarted |
 | Import not in the symbol chooser | KiCad caches lib-tables at startup — restart |
@@ -314,7 +331,7 @@ Common failure signatures:
 ```bash
 .venv/bin/ruff check --extend-exclude=lib          # must pass clean
 .venv/bin/ruff format --check --exclude lib        # only your files; 4 are dirty at HEAD
-.venv/bin/python -m pytest                         # 311 passed
+.venv/bin/python -m pytest                         # 512 passed
 ```
 
 Plus, if you touched a dialog:

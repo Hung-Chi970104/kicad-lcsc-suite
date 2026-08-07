@@ -9,18 +9,23 @@ import os
 from pathlib import Path
 import sys
 
-# Add parent directory to path so we can import common module
+# Run as a script by the GitHub Action, so there is no conftest to do this.
+# The repository root carries both packages this imports: db_build.common and
+# kicad_lcsc_suite.dblib, which defines the database format being written.
 # TODO(z2amiller):  Use proper packaging
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import click  # noqa: E402
 
-from common.componentdb import ComponentsDatabase  # noqa: E402
-from common.filemgr import FileManager  # noqa: E402
-from common.jlcapi import CategoryFetch, Component, JlcApi  # noqa: E402
-from common.partsdb import Generate, PartsDatabase  # noqa: E402
-from common.progress import PrintNestedProgressBar, TqdmNestedProgressBar  # noqa: E402
-from dblib import DatabaseConfig  # noqa: E402
+from db_build.common.componentdb import ComponentsDatabase  # noqa: E402
+from db_build.common.filemgr import FileManager  # noqa: E402
+from db_build.common.jlcapi import CategoryFetch, Component, JlcApi  # noqa: E402
+from db_build.common.partsdb import Generate, PartsDatabase  # noqa: E402
+from db_build.common.progress import (  # noqa: E402
+    PrintNestedProgressBar,
+    TqdmNestedProgressBar,
+)
+from kicad_lcsc_suite.dblib import DatabaseConfig  # noqa: E402
 
 
 def update_components_db_from_api() -> None:

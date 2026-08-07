@@ -98,25 +98,10 @@ def _stubbed_wx():
 for _mod in ["pcbnew", "requests"]:
     sys.modules.setdefault(_mod, MagicMock())
 
-# Deliberately not the ``kicadplugin`` alias the other test modules use. Two
-# of them register hand-built stubs for individual submodules of it —
-# ``kicadplugin.footprint_helpers`` among them, carrying only the two names
-# they need — and those stubs win for whoever imports afterwards. Importing
-# the real mainwindow under its own package name sidesteps the whole shared
-# namespace.
-_pkg_name = "kicadplugin_mainwindow"
-if _pkg_name not in sys.modules:
-    _pkg = types.ModuleType(_pkg_name)
-    _pkg.__path__ = [str(_ROOT)]
-    sys.modules[_pkg_name] = _pkg
-
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-import importlib  # noqa: E402
-
+# Under the wx stub only for the import: mainwindow builds classes off wx bases
+# at module scope, but the refresh logic under test never touches the toolkit.
 with _stubbed_wx():
-    mainwindow = importlib.import_module(f"{_pkg_name}.mainwindow")
+    from kicad_lcsc_suite import mainwindow  # noqa: E402
 
 PARTS = [
     {"reference": "R19", "lcsc": "C25744"},
