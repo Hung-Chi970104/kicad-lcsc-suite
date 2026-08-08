@@ -24,9 +24,11 @@ by hand rather than assumed.
     .venv/bin/python scripts/live_ipc_check.py
 
 Every value it changes is put back, and it never saves. It still **refuses to
-run** unless the open board's project path is one you named with ``--allow``
-(or a path containing "scratch"/"tmp"), because a verification tool that can
-touch a real project is one bad afternoon from being a data-loss tool.
+run** unless the open board's project path is one you named with ``--allow``, or
+sits in a directory actually *called* ``scratch``, ``tmp`` or ``temp``, because a
+verification tool that can touch a real project is one bad afternoon from being
+a data-loss tool. Whole directory names, not substrings — ``_is_disposable``
+says why that distinction had teeth.
 
 Exit status is nonzero if any assertion failed.
 """
@@ -35,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -44,9 +47,8 @@ if _ROOT not in sys.path:
 
 from lcsc_suite import kicad_bridge  # noqa: E402
 
-#: Path fragments that mark a board as disposable. Deliberately crude — the
-#: point is to make "I pointed it at my real project" take a conscious
-#: ``--allow``, not to be clever about it.
+#: Directory *names* that mark a board as disposable. Matched as whole path
+#: components, never as substrings — see :func:`_is_disposable`.
 DISPOSABLE = ("scratch", "tmp", "temp")
 
 #: Numbers written during the run. Chosen to be obviously synthetic, so one left
@@ -76,11 +78,30 @@ class Report:
 
 
 def _is_disposable(path: str, allowed: list) -> bool:
-    """Report whether this board is one we are permitted to write to."""
-    lowered = path.lower()
-    if any(fragment in lowered for fragment in DISPOSABLE):
+    """Report whether this board is one we are permitted to write to.
+
+    **Both halves match whole path components, and both used to match
+    substrings.** That was not a nicety. ``"temp" in path.lower()`` says yes to
+    ``~/Research/temperature-controller/PCB`` — a real project, waved through by
+    the guard whose entire job is refusing real projects, because its name begins
+    with the same four letters as a temporary directory. The ``--allow`` half had
+    the same flaw one step further along: ``abspath(entry) in abspath(path)``
+    made ``--allow /tmp/a`` also permit ``/tmp/abc``.
+
+    So a fragment has to *be* a directory name, and an ``--allow`` entry has to
+    be a real ancestor. Being crude is fine and deliberate — pointing this at a
+    real project should take a conscious ``--allow``. Being crude in the
+    permissive direction is not, because everything downstream of here writes.
+    """
+    parts = {part.lower() for part in Path(path).parts}
+    if parts & set(DISPOSABLE):
         return True
-    return any(os.path.abspath(entry) in os.path.abspath(path) for entry in allowed)
+    target = Path(path).resolve()
+    for entry in allowed:
+        root = Path(entry).resolve()
+        if target == root or root in target.parents:
+            return True
+    return False
 
 
 def check_existing_field(board, report: Report, footprints) -> None:
