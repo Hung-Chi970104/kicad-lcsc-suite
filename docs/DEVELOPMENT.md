@@ -40,14 +40,17 @@ python3 -m venv .venv
 .venv/bin/pip install "ruff==0.14.14"  # match the pre-commit pin — see §4
 ```
 
-`.venv/` is gitignored. The editable install is only for the test suite's
-sake: the *plugin* still has no installable dependencies, and adding one is
-a rule violation ([AGENTS.md](../AGENTS.md#hard-rules)).
+`.venv/` is gitignored. `./install.sh` builds the same venv and adds the app's
+own runtime dependencies (PySide6, kicad-python) — which the app *does* have, and
+which are declared deliberately; see hard rule 4 in
+[AGENTS.md](../AGENTS.md#hard-rules). The "no installable dependencies" rule this
+section used to cite belonged to KiCad's bundled interpreter and went with it at
+the Phase 8 cutover.
 
 ## 3. Tests
 
 ```bash
-.venv/bin/python -m pytest          # 512 passed in ~7s
+.venv/bin/python -m pytest          # 789 passed in ~90s
 .venv/bin/python -m pytest -q tests/test_bom_estimator.py
 .venv/bin/python -m pytest -q -k "stock or retail"
 ```
@@ -58,25 +61,23 @@ a rule violation ([AGENTS.md](../AGENTS.md#hard-rules)).
 name.
 
 **Every test file also passes on its own**, and that is worth preserving.
-Several import a wx-dependent module under a `MagicMock` toolkit, and because
-the modules are now shared rather than loaded per-file under a synthetic
-package name, one file's stub is visible to the next. Two rules keep that
-harmless: install stubs with `sys.modules.setdefault`, never by assignment;
-and if a test needs a *specific* value out of a stub, pin it on the imported
-module (`monkeypatch.setattr`, or an autouse fixture) rather than racing on
-who imports first. Check with:
+Modules are shared rather than loaded per-file under a synthetic package name,
+so one file's stub is visible to the next. Two rules keep that harmless: install
+stubs with `sys.modules.setdefault`, never by assignment; and if a test needs a
+*specific* value out of a stub, pin it on the imported module
+(`monkeypatch.setattr`, or an autouse fixture) rather than racing on who imports
+first. Check with:
 
 ```bash
 for f in tests/test_*.py; do .venv/bin/python -m pytest -q "$f" >/dev/null || echo "FAILS ALONE: $f"; done
 ```
 
-Everything under test is deliberately wx-free:
-`lcsc_suite/bom_estimation/pricing.py`, `db_build/common/translate.py`,
-`fabrication.split_bom_designators` and friends. `events.py` dispatches to a Qt
-sink or `wx.PostEvent` depending on the destination, which is what keeps the
-importing modules testable — and what lets `library.py` serve both halves.
+The suite builds real Qt widgets — there is no toolkit to stub out any more — and
+still never touches the network: it passes `FixtureSource` and
+`Library(allow_network=False)`.
 
-**There is no automated coverage of the wx dialogs.** That is what §5 is for.
+**What the suite cannot cover is what §5 and §6 are for**: whether a screen
+*looks* right, and whether a write actually reaches the board.
 
 ## 4. Lint
 
@@ -97,12 +98,13 @@ ruff (0.16.x) adds `PLR0917` and flags two pre-existing files
 (`tests/test_componentdb.py`, `db_build/jlcparts_db_convert.py`), plus it
 reformats differently. Chasing those is churn.
 
-**`ruff format --check` is not clean at HEAD.** Four untouched upstream
-files would be reformatted: `corrections.py`, `events.py`, `kicad_drc.py`,
-`partdetails.py`. **Leave them alone.** `CLAUDE.md`'s "only reformat lines
-you are intentionally changing" exists precisely to keep the fork's diff
-against upstream readable. `ruff check` *does* pass clean at HEAD — that is
-the gate to keep green.
+**Both commands are clean at HEAD, and CI runs both.** This used to say that
+`ruff format --check` was expected to fail on four untouched upstream files
+(`corrections.py`, `events.py`, `kicad_drc.py`, `partdetails.py`) and that you
+should leave them alone. All four went with the wx plugin at the Phase 8 cutover,
+so if `ruff format --check` reports anything now, it is yours. `CLAUDE.md`'s
+"only reformat lines you are intentionally changing" still stands, for the same
+reason it always did: keeping the fork's diff against upstream readable.
 
 Pre-commit is configured (ruff, pyupgrade, markdownlint) if you want it:
 
@@ -134,6 +136,22 @@ real data.
 Commit the updated PNGs **in the same commit** as the UI change, so the diff
 shows the visual change. Adding a screen is a `screen_*` builder plus an entry
 in `SCREENS`; CI covers it automatically.
+
+**A run with no UI change leaves the tree clean.** Re-render twice and the 38
+PNGs are byte-identical, so `git status` after a probe run lists exactly the
+screens your change altered and nothing else. That is worth protecting: it used
+to list 21 either way, because the log pane's clock, the throwaway project's
+`mkdtemp` path and a half-finished fade animation all landed in the pixels, and a
+diff that is noisy in the same places every time is a diff nobody reads. If a
+screen you did not touch starts moving, something has reintroduced a dependency
+on *when* or *where* the probe ran — see `freeze_log_clock`,
+`PROBE_PROJECT_ROOT` and the double grab in `render`.
+
+`geometry.txt` is the one exception, and only for two lines: one `[hidden]`
+scroll container in `explorer-reopened-dark` flips between 1434px and 1448px
+between runs. Nobody can see it and the gate skips hidden widgets' sizes on
+purpose — `compare_geometry.py` names this exact widget in its own comment — so
+a four-line diff there is noise, not a finding.
 
 ### The cross-platform gate
 
@@ -244,16 +262,22 @@ destructive migration; these files live in users' board directories.
 
 ## 9. Debugging
 
-Logging goes to the main window's log panel via `LogBoxHandler`
-([mainwindow.py:2123](../mainwindow.py#L2123)), so `logging.getLogger(__name__)`
-output is visible in the UI. Every module already has a `self.logger`.
+Logging goes to the main window's log panel via `LogHandler`
+([lcsc_suite/ui/log_pane.py](../lcsc_suite/ui/log_pane.py)), installed on the
+root logger, so `logging.getLogger(__name__)` output from any module — including
+worker threads — is visible in the UI.
+
+**A crash before the window exists is invisible in KiCad**, which discards both
+streams of an `exec` plugin. `kicad_plugin/run.sh` redirects them to
+`~/.local/state/lcsc-suite/plugin.log`; that file is the only place a start-up
+traceback can be read.
 
 Common failure signatures:
 
 | Symptom | Look at |
 |---|---|
-| Dialog opens blank or half-built | a `wxAssertionError` aborted `_build_ui()` — check sizer alignment flags against orientation |
-| `RuntimeError` deep in the wx event loop | a `wx.CallAfter` landed on a destroyed window — missing `_alive()` guard |
+| Toolbar button does nothing at all | `~/.local/state/lcsc-suite/plugin.log`. Usually trap 1: a `PYTHONHOME` that `run.sh` did not clear, killing the venv Python before it runs a line |
+| A write returns success and the board is unchanged | trap 2 — the write must target the parent footprint, not the field; or trap 4 — you re-read between `begin_commit()` and `push_commit()`, where an open commit is invisible |
 | Stale results overwrite fresh ones | missing staleness-token check (`_search_token` / `_detail_token` / `_retail_token` / `assembly_enrichment_generation`) |
 | Stock shows `?` | TLS trust — set `LCSC_CA_BUNDLE` to a CA bundle |
 | Retail column stuck on `…` | LCSC detail endpoint unreachable or rate-limiting; **Refresh** retries |
@@ -266,7 +290,7 @@ Common failure signatures:
 ```bash
 .venv/bin/ruff check --extend-exclude=lib          # must pass clean
 .venv/bin/ruff format --check --exclude lib        # must pass clean too, since Phase 8
-.venv/bin/python -m pytest -q                      # 770 passed
+.venv/bin/python -m pytest -q                      # 789 passed
 ```
 
 Plus, if you touched the UI — and look at the images, do not just run it:

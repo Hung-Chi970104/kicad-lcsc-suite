@@ -2405,8 +2405,8 @@ ExplorerWindow 1470x831@2,2 'LCSC Explorer'
           QWidget#qt_scrollarea_vcontainer 18x30@0,0 [hidden]
             QScrollBar 18x30@0,0 [hidden]
         QAbstractButton#qt_tableview_cornerbutton 0x29@1,1 [hidden]
-        QWidget#qt_scrollarea_hcontainer 1434x18@1,431 [hidden]
-          QScrollBar 1434x18@0,0 [hidden]
+        QWidget#qt_scrollarea_hcontainer 1448x18@1,431 [hidden]
+          QScrollBar 1448x18@0,0 [hidden]
         QWidget#qt_scrollarea_vcontainer 18x471@1435,1
           QScrollBar 18x471@0,0
     QSplitterHandle#qt_splithandle_ 100x30@0,0 [hidden]

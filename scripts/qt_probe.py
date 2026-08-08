@@ -30,8 +30,10 @@ import argparse
 import contextlib
 import logging
 import os
+import shutil
 import sys
 import tempfile
+import time
 import traceback
 from typing import Optional
 
@@ -63,6 +65,30 @@ DEFAULT_OUTPUT_DIR = os.path.join(_ROOT, "docs", "screens")
 #: rather than generated — see ``open_board``.
 PROJECT_NAME = "tempctrl"
 
+#: Where those project directories go. Fixed, and for the same reason
+#: ``PROJECT_NAME`` is: the Explorer's "Library folder" field shows
+#: ``<project>/lcsc-lib``, so a ``mkdtemp`` suffix anywhere in the project path
+#: is a ``mkdtemp`` suffix on screen. ``PROJECT_NAME`` closed that hole one
+#: level down for ``export-summary`` and left it open one level up, where 12 of
+#: the Explorer's PNGs were reading it.
+#:
+#: Deterministic paths give up ``mkdtemp``'s collision safety, so ``open_board``
+#: wipes each screen's directory before use rather than trusting it to be
+#: absent. Two probe runs at once on one machine would still fight; that is a
+#: trade for screenshots whose bytes depend only on the UI.
+PROBE_PROJECT_ROOT = os.path.join(tempfile.gettempdir(), "lcsc-probe")
+
+#: What every log line in every screenshot is stamped with.
+#:
+#: A screenshot's clock carries no information about the app, and it changes on
+#: every run: re-rendering with no code change at all rewrote all 8 main-window
+#: PNGs on the timestamp alone. The rule this whole harness exists to serve is
+#: "read the PNG diff", and a diff of moving clock hands is one nobody reads.
+#:
+#: Chosen to be obviously not-now, so nobody reads a screenshot's timestamp as
+#: evidence of when anything happened.
+FIXED_LOG_TIME = time.struct_time((2026, 1, 1, 12, 0, 0, 2, 1, 0))
+
 #: How long to let the event loop run before grabbing. Layout, deferred column
 #: sizing and any single-shot timer a screen uses to finish itself off all need
 #: a turn of the loop; 400ms is comfortably more than any of them take and
@@ -81,6 +107,35 @@ def settle(milliseconds: int = SETTLE_MS) -> None:
     QTimer.singleShot(milliseconds, loop.quit)
     loop.exec()
     QApplication.processEvents()
+
+
+def freeze_log_clock() -> None:
+    """Stamp every log line this process formats with :data:`FIXED_LOG_TIME`.
+
+    ``Formatter.converter`` is the documented seam for this and it is a *class*
+    attribute, so one assignment covers the log pane's own formatter — which the
+    pane builds itself, out of reach of the probe — as well as the stderr one.
+
+    ``staticmethod`` is not decoration. The stdlib's default is ``time.localtime``,
+    a builtin, and builtins are not descriptors; a plain Python function assigned
+    to the same attribute *is* one, and would be handed ``self`` as its seconds
+    argument the first time a record was formatted.
+    """
+    logging.Formatter.converter = staticmethod(lambda _seconds=None: FIXED_LOG_TIME)
+
+
+def freeze_cursor_blink(application: QApplication) -> None:
+    """Stop the text caret blinking, so a grab cannot catch it mid-blink.
+
+    The Explorer's search field holds focus in three screens, and a blinking
+    caret is one column of pixels that is present or absent depending on the
+    millisecond the grab happened — 15 pixels, and enough to rewrite the file.
+
+    Zero means "do not flash" to Qt, which leaves the caret drawn. Drawn is the
+    right answer: the field really does have focus, and a screenshot that hid
+    that would be showing something the app never shows.
+    """
+    application.setCursorFlashTime(0)
 
 
 def probe_settings() -> Settings:
@@ -813,8 +868,8 @@ class Context:
         self.args = args
 
 
-def open_board(args):
-    """Open the board a screen should render against.
+def open_board(args, screen: str = PROJECT_NAME):
+    """Open the board *screen* should render against.
 
     Called **once per screen**, not once per run. The fixture board is mutable
     and screens now write to it: ``mainwindow-assigned`` assigns a number, and
@@ -822,16 +877,19 @@ def open_board(args):
     alphabetically — with nothing unassigned left to show. A screenshot that
     depends on which screens ran before it is not evidence about anything.
 
-    Each gets a fresh temporary project directory for the same reason: store.py
-    really does create ``<project>/jlcpcb/project.db``, and a probe run must not
-    write into the checkout or carry state between runs.
+    Each gets its own project directory for the same reason: store.py really does
+    create ``<project>/jlcpcb/project.db``, and a probe run must not write into
+    the checkout or carry state between runs. Hence the wipe — the path is fixed
+    now, so being fresh is this function's job rather than ``mkdtemp``'s.
 
-    The directory is a **fixed name inside** a fresh temporary one, rather than
-    the temporary one itself. ``export-summary`` puts the project directory on
-    screen, and ``mkdtemp``'s random suffix is a fixed number of *characters* in
-    a proportional font — so the same screen rendered at 354px, 346px and 353px
-    on three consecutive runs, and the CI check that compares committed sizes
-    was deciding by coin flip which of those it had.
+    **Every component of that path is fixed**, because two screens read parts of
+    it onto the screen and a path is text. ``export-summary`` shows the project
+    directory: ``mkdtemp``'s suffix is a fixed number of *characters* in a
+    proportional font, so the same screen rendered at 354px, 346px and 353px on
+    three consecutive runs and the CI size check was deciding by coin flip which
+    of those it had. Naming the directory ``tempctrl`` fixed the width but left
+    the random parent one level up, which the Explorer's "Library folder" field
+    shows in full — so all 12 Explorer PNGs changed on every run instead.
 
     ``--live`` is the exception — there is one KiCad and one open board, and the
     live path is for looking at real data, not for reproducible screenshots.
@@ -839,7 +897,9 @@ def open_board(args):
     if args.live:
         return kicad_bridge.connect()
     board = kicad_bridge.open_fixture(args.fixture)
-    project = os.path.join(tempfile.mkdtemp(prefix="lcsc-probe-"), PROJECT_NAME)
+    owned = os.path.join(PROBE_PROJECT_ROOT, screen)
+    shutil.rmtree(owned, ignore_errors=True)
+    project = os.path.join(owned, PROJECT_NAME)
     os.makedirs(project, exist_ok=True)
     board.relocate(project)
     return board
@@ -865,12 +925,24 @@ def _capture(path: Optional[str]):
 
 
 def render(name: str, context: Context, output_dir: str, mode: str) -> tuple[bool, str]:
-    """Build one screen, grab it to a PNG, optionally dump its geometry."""
+    """Build one screen, grab it to a PNG, optionally dump its geometry.
+
+    **Grabbed twice, and the second one is the screenshot.** Offscreen, nothing
+    paints until something asks it to, and the first ``grab()`` is what asks.
+    Widgets that animate their own appearance start doing so at that first paint
+    — a ``QLineEdit``'s clear button fades in over a couple of hundred
+    milliseconds — so the first grab catches the fade partway through, at
+    whatever opacity the clock happened to be at. The settle before it cannot
+    help: the animation has not started yet. Grabbing again after another settle
+    catches the state the user would actually see.
+    """
     builder = SCREENS[name]
     suffix = "" if mode == "light" else f"-{mode}"
     target = os.path.join(output_dir, f"{name}{suffix}.png")
     try:
         widget = builder(context)
+        settle()
+        widget.grab()
         settle()
         pixmap = widget.grab()
         os.makedirs(output_dir, exist_ok=True)
@@ -946,6 +1018,9 @@ def main(argv=None) -> int:
     # DEBUG line per part, and derive_params calls basicConfig(DEBUG) at import,
     # which would otherwise fill the pane with reconciliation chatter.
     app_module.configure_logging(logging.INFO)
+    # Before any window exists, because the pane's handler formats records as
+    # they arrive and the first of them is logged while the window is building.
+    freeze_log_clock()
 
     if args.list:
         for name in sorted(SCREENS):
@@ -973,6 +1048,7 @@ def main(argv=None) -> int:
     live_board = None
     for mode in modes:
         application = app_module.build_application(theme_mode=mode, offscreen=True)
+        freeze_cursor_blink(application)
         for name in names:
             # Fresh board and fresh settings per screen. The board because
             # screens write to it (see open_board); the settings because the
@@ -984,7 +1060,7 @@ def main(argv=None) -> int:
                 live_board = live_board or open_board(args)
                 board = live_board
             else:
-                board = open_board(args)
+                board = open_board(args, name)
             context = Context(board, probe_settings(), args)
             ok, problem = render(name, context, args.out, mode)
             if not ok:
