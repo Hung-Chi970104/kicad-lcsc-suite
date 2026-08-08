@@ -157,6 +157,27 @@ def dump_table(view, label: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+_FIXTURE_SOURCE = None
+
+
+def fixture_source():
+    """Return the captured search source, built once per process.
+
+    Every screen gets one, not just the Explorer's. Since Phase 5 the BOM
+    estimator looks up assembly metadata through the source as well, so a
+    controller built without one would either skip that lookup or — worse, if
+    it fell back to the lazy default — make live requests from a screenshot
+    run. Cached because the constructor reads a megabyte of payloads and
+    ``install()`` is idempotent.
+    """
+    global _FIXTURE_SOURCE  # noqa: PLW0603 - one capture per process, by design
+    if _FIXTURE_SOURCE is None:
+        from lcsc_suite.search_source import FixtureSource
+
+        _FIXTURE_SOURCE = FixtureSource()
+    return _FIXTURE_SOURCE
+
+
 def _controller(context, source=None):
     """Build the controller, its part list and its window — the whole app.
 
@@ -169,6 +190,7 @@ def _controller(context, source=None):
     from lcsc_suite.controller import build
     from lcsc_suite.parts import PartList, open_fixture_library
 
+    source = source or fixture_source()
     parts = PartList(context.board, settings=context.settings)
     # A throwaway data directory seeded from fixtures/part_details.json, never
     # the developer's real part cache. Type / LCSC Params / JLC Stock are only
@@ -297,9 +319,7 @@ def _explorer(context, references=None, keyword: str = ""):
     assign path runs through ``SuiteController.assign_number`` and a screenshot
     of buttons wired to nothing is not evidence about the app.
     """
-    from lcsc_suite.search_source import FixtureSource
-
-    source = FixtureSource()
+    source = fixture_source()
     controller = _controller(context, source=source)
     window = controller.window
     if references is None:
@@ -416,19 +436,191 @@ def screen_photo_viewer(context) -> QWidget:
     return explorer._photo_viewer
 
 
+# ---------------------------------------------------------------------------
+# Phase 5 — the remaining dialogs
+# ---------------------------------------------------------------------------
+
+
+def screen_settings(context) -> QWidget:
+    """Build the Settings dialog (§5.3).
+
+    Rendered at the shipped defaults, like every other screen, which means the
+    inverted labels are all showing their *ticked* wording except
+    ``lcsc_priority`` — the one setting that ships off. That contrast is worth
+    having in the picture: it is the whole argument for the paired labels, and
+    a screen where every row read the same way would not show it.
+    """
+    from lcsc_suite.ui.settings_dialog import SettingsDialog
+
+    controller = _controller(context)
+    dialog = SettingsDialog(controller.window, settings=context.settings)
+    dialog.changed.connect(controller.apply_setting)
+    dialog.show()
+    return dialog
+
+
+def screen_mappings(context) -> QWidget:
+    """Build the Mappings Manager over mappings this board actually produced.
+
+    Seeded by pressing `Save mappings`, not by writing rows into the table: the
+    93 assigned parts on the fixture board collapse to the distinct
+    footprint+value pairs among them, which is exactly what a user gets from
+    that button and is a truer picture of the window than invented entries.
+    """
+    from lcsc_suite.ui.mappings_dialog import MappingsDialog
+
+    controller = _controller(context)
+    controller.save_mappings()
+    dialog = MappingsDialog(controller.window, library=controller.parts.library)
+    dialog.table.selectRow(1)
+    dialog.show()
+    return dialog
+
+
+#: A few corrections to render the manager with. Deliberately *not* a copy of
+#: the community rotation table: `Update` is what fetches that, it cannot run in
+#: a probe, and shipping a half-remembered version of it would be a file people
+#: could mistake for authoritative. These are patterns built from the fixture
+#: board's own footprints with illustrative values — enough to show a populated
+#: table, and obviously local to this board.
+SAMPLE_CORRECTIONS = (
+    ("^SOT-23", 180, 0.0, 0.0),
+    ("^SOT-223", 180, 0.0, 0.0),
+    ("^R_0402_1005Metric", 0, 0.0, 0.0),
+    ("^C_0603_1608Metric", 0, 0.0, 0.0),
+    ("^TerminalBlock", 90, 0.0, -1.25),
+    ("^LED_", 270, 0.15, 0.0),
+)
+
+
+def screen_corrections(context) -> QWidget:
+    """Build the Corrections Manager with a rule selected for editing (§5.4).
+
+    A row is selected on purpose: selecting one loads it into the Add / Edit box
+    above, which is the interaction the whole layout exists for and is invisible
+    in a screenshot of an idle table. `Update` is disabled, because
+    ``allow_network=False`` — the same switch the probe hands every other
+    outward-facing control.
+    """
+    controller = _controller(context)
+    library = controller.parts.library
+    if library is not None:
+        library.create_correction_table()
+        for pattern, rotation, offset_x, offset_y in SAMPLE_CORRECTIONS:
+            library.insert_correction_data(pattern, rotation, (offset_x, offset_y))
+    dialog = controller.build_corrections_dialog(allow_network=False)
+    dialog.table.selectRow(4)
+    dialog.show()
+    return dialog
+
+
+def screen_part_details(context) -> QWidget:
+    """Build the Part Details window for a part in the capture (§5.6).
+
+    The number comes from the captured search rather than from the fixture
+    board: the board's own numbers have cached *summaries* (enough for the part
+    table's three columns) but no assembly record, and this window is built
+    almost entirely out of the assembly record. Row 0 of the capture is a part
+    every endpoint answered for, so the price ladders and the photo are all
+    filled.
+    """
+    from lcsc_suite.ui.part_details_dialog import PartDetailsDialog
+
+    source = fixture_source()
+    controller = _controller(context, source=source)
+    hits = source.hits()[1]
+    dialog = PartDetailsDialog(
+        controller.window,
+        source=source,
+        lcsc=hits[0].lcsc,
+        references=["C12", "C13", "C14"],
+        project_path=context.board.info().project_path,
+    )
+    dialog.show()
+    settle(700)
+    return dialog
+
+
+def screen_mainwindow_estimate(context) -> QWidget:
+    """Build the main window with a real BOM estimate and an amber trigger.
+
+    The screen that closes two items the plan has carried open since Phase 2:
+    the summary line said "no assigned BOM parts" on every board because nothing
+    computed it, and ``set_standard_trigger_refs`` was called by nobody, so the
+    amber Standard-mode advisory could not be seen at all.
+
+    ``component_product_type`` is seeded directly for two references rather than
+    fetched. It is the one estimator input that lives on neither the board nor
+    the part cache — it comes from JLC's assembly record, one request per number
+    — and the explorer capture holds records for its own search results, not for
+    this board's parts. Writing it here is exactly what
+    ``BomEstimator.enrich()`` writes when it does run, so the colour and the
+    summary line are produced by the real code path from the real database; only
+    the provenance of that one flag is short-circuited.
+    """
+    controller = _controller(context)
+    window = controller.window
+    store = controller.parts.store
+    # Let the enrichment pass the controller started on construction finish
+    # first. It asks the capture about this board's numbers, the capture holds
+    # a different search, and a lookup that lands after the seed below would
+    # have nothing to say about these two parts — which is a race, not a screen.
+    settle(400)
+    triggers = [
+        row.reference
+        for row in window.part_model.rows()
+        if row.assigned and not row.exclude_from_bom
+    ][:2]
+    for reference in triggers:
+        store.set_assembly_metadata(reference, "SMT", 1)
+    # recompute, not reload_parts: a reload starts another enrichment pass, and
+    # the point here is to render what the estimator does with the metadata, not
+    # to race it again.
+    controller.estimator.recompute()
+    _scroll_to(window, triggers)
+    return window
+
+
+def screen_export_summary(context) -> QWidget:
+    """Build the report shown after a real BOM/CPL export (Phase 6).
+
+    The export has no window of its own — it writes two files — so this dialog
+    is the whole of its user interface, and the part of it worth looking at is
+    the last line. "Left out: 8 marked do-not-place" is the answer to the first
+    question anyone asks of a BOM, and the wx plugin answers it only in a log
+    pane that has already scrolled.
+
+    The files are really written, into the throwaway project directory
+    ``open_board`` made, by the same ``Exporter`` the button uses. Nothing here
+    is mocked; the counts on screen are counts of rows on disk.
+    """
+    controller = _controller(context)
+    result = controller.run_export()
+    box = controller.build_export_report(result)
+    box.show()
+    settle(60)
+    return box
+
+
 #: name -> builder. Grows one entry per phase; ``--all`` renders every one, so
 #: adding a screen here is what puts it under CI.
 SCREENS = {
     "assign-dialog": screen_assign_dialog,
+    "corrections": screen_corrections,
     "explorer": screen_explorer,
     "explorer-detail": screen_explorer_detail,
     "explorer-facets": screen_explorer_facets,
     "explorer-inline": screen_explorer_inline,
     "explorer-retail": screen_explorer_retail,
+    "export-summary": screen_export_summary,
     "mainwindow": screen_mainwindow,
     "mainwindow-assigned": screen_mainwindow_assigned,
+    "mainwindow-estimate": screen_mainwindow_estimate,
     "mainwindow-unassigned": screen_mainwindow_unassigned,
+    "mappings": screen_mappings,
+    "part-details": screen_part_details,
     "photo-viewer": screen_photo_viewer,
+    "settings": screen_settings,
 }
 
 

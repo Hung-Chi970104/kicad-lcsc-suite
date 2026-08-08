@@ -77,14 +77,21 @@ def main(argv=None) -> int:
 
     from .controller import build as build_controller
     from .parts import PartList
+    from .search_source import build_source
 
     settings = Settings(legacy_path=legacy_settings_path())
     parts = PartList(board, settings=settings)
     # The same data directory the wx plugin fills, so both halves read one part
     # cache, one mappings table and one corrections database while they coexist.
     parts.open_libraries()
-    # The controller builds the window and owns every write; see controller.py.
-    controller = build_controller(board, parts, settings=settings)
+    # Named here rather than left to the controller's lazy default. Building a
+    # LiveSource costs nothing — it is a namespace over lcsc/api.py — and the
+    # BOM estimator only runs its assembly-metadata lookup when it has been
+    # given a source, so that omitting one means "no network" everywhere else.
+    # This is the one place that is meant to have one.
+    controller = build_controller(
+        board, parts, settings=settings, source=build_source()
+    )
     window = controller.window
     guard.raise_requested.connect(window.raise_to_front)
     application.aboutToQuit.connect(guard.release)

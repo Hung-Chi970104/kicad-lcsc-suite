@@ -229,7 +229,7 @@ class PartList:
                 continue
             lcsc = part.get("lcsc") or ""
             if lcsc and lcsc not in details_by_lcsc:
-                details_by_lcsc[lcsc] = self._details(lcsc)
+                details_by_lcsc[lcsc] = self.details_for(lcsc)
             details = dict(details_by_lcsc.get(lcsc, {}))
             if details:
                 details["params"] = derive_params.params_for_part(details)
@@ -239,13 +239,17 @@ class PartList:
             rows.append(row)
         return rows
 
-    def _details(self, lcsc: str) -> dict:
+    def details_for(self, lcsc: str) -> dict:
         """Resolve one part's details from local storage only.
 
         Never the network: this runs once per assigned part while the list is
         being built on the UI thread. With no library configured it returns
         nothing, and the Type / Stock / Params columns stay empty rather than the
         window refusing to open.
+
+        Public because the BOM estimator needs the same lookup under the same
+        rule, and a second spelling of "ask the cache, tolerate a broken one"
+        is how the two would drift.
         """
         if self.library is None:
             return {}

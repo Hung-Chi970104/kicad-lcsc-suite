@@ -3,10 +3,8 @@
 import csv
 from importlib import import_module
 import logging
-import math
 import os
 from pathlib import Path
-import re
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from pcbnew import (  # pylint: disable=import-error
@@ -26,12 +24,12 @@ from pcbnew import (  # pylint: disable=import-error
     F_Mask,
     F_Paste,
     F_SilkS,
-    FromMM,
     Refresh,
-    ToMM,
     wxPoint,
 )
 
+from . import fab_rules
+from .fab_rules import split_bom_designators  # noqa: F401 - re-exported
 from .footprint_helpers import get_is_dnp
 
 # Compatibility hack for V6 / V7 / V7.99
@@ -42,49 +40,11 @@ try:
 except ImportError:
     NO_DRILL_SHAPE = PCB_PLOT_PARAMS.NO_DRILL_SHAPE
 
-# JLC rejects BOM rows whose total length exceeds 2048 characters.  We budget
-# 128 characters of headroom for the other fields (Comment, Footprint, LCSC,
-# Quantity) so the Designator chunk alone is capped at 1920 characters.
-_BOM_DESIGNATOR_MAX_LEN = 1920  # 2048 - 128 padding for remaining CSV fields
-
-
-def split_bom_designators(
-    designators: list, max_len: int = _BOM_DESIGNATOR_MAX_LEN
-) -> list:
-    """Split a list of reference designators into chunks whose joined length fits within *max_len*.
-
-    JLCPCB rejects BOM rows whose total row length exceeds 2048 characters.
-    The Designator field is capped below that limit to leave headroom for the
-    other fields (Comment, Footprint, LCSC, Quantity).  When a single part has
-    more references than fit in the limit, the row is duplicated with the
-    designators spread across copies; each copy carries only its own count.
-
-    Args:
-        designators: Ordered list of reference strings, e.g. ``["R1", "R2", ...]``.
-        max_len: Maximum allowed byte-length of the comma-joined designator string.
-
-    Returns:
-        A list of non-empty lists, each safe to pass to ``",".join()``.
-
-    """
-    if not designators:
-        return []
-    chunks = []
-    current: list = []
-    current_len = 0
-    for ref in designators:
-        # Length if this ref were appended: len(ref) plus the comma separator
-        added = len(ref) if not current else len(ref) + 1
-        if current and current_len + added > max_len:
-            chunks.append(current)
-            current = [ref]
-            current_len = len(ref)
-        else:
-            current.append(ref)
-            current_len += added
-    if current:
-        chunks.append(current)
-    return chunks
+# The 2048-character BOM row limit and the chunker that respects it moved to
+# fab_rules, along with the rest of what both halves of the migration have to
+# agree on. Imported above under its old name so existing callers and tests do
+# not care that it moved.
+_BOM_DESIGNATOR_MAX_LEN = fab_rules.BOM_DESIGNATOR_MAX_LEN
 
 
 class Fabrication:
@@ -134,102 +94,72 @@ class Fabrication:
             Refresh()
 
     def _find_correction(self, value):
-        """Return (rotation, offset) for the first correction matching value.
+        """Return (rotation, offset) for the first correction matching value."""
+        return fab_rules.find_correction(self.corrections, value)
 
-        Tries anchored match (pattern + '$') before falling back to unanchored,
-        so 'SOT-23-3' beats 'SOT-23' when both patterns exist.
-        """
-        anchored = [(f"(?:{r})$", rot, off) for r, rot, off in self.corrections]
-        for regex, rotation, offset in anchored:
-            if re.search(regex, value):
-                return rotation, offset
-        for regex, rotation, offset in self.corrections:
-            if re.search(regex, value):
-                return rotation, offset
-        return None
+    @staticmethod
+    def _correction_names(footprint):
+        """Return the three names a correction may match, in priority order."""
+        return (
+            str(footprint.GetReference()),
+            str(footprint.GetValue()),
+            str(footprint.GetFPID().GetLibItemName()),
+        )
 
-    def fix_rotation(self, footprint):
-        """Fix the rotation of footprints in order to be correct for JLCPCB."""
+    @staticmethod
+    def _orientation(footprint):
+        """Return the footprint's angle in degrees, across KiCad versions."""
         original = footprint.GetOrientation()
         # `.AsDegrees()` added in KiCAD 6.99
         try:
-            rotation = original.AsDegrees()
+            return original.AsDegrees()
         except AttributeError:
             # we need to divide by 10 to get 180 out of 1800 for example.
             # This might be a bug in 5.99 / 6.0 RC
-            rotation = original / 10
-        if footprint.GetLayer() != 0:
-            # bottom angles need to be mirrored on Y-axis
-            rotation = (180 - rotation) % 360
-        for getter in (
-            lambda: str(footprint.GetReference()),
-            lambda: str(footprint.GetValue()),
-            lambda: str(footprint.GetFPID().GetLibItemName()),
-        ):
-            match = self._find_correction(getter())
-            if match:
-                return self.rotate(footprint, rotation, match[0])
-        return rotation
+            return original / 10
 
-    def rotate(self, footprint, rotation, correction):
-        """Calculate the actual correction."""
-        rotation = (rotation + int(correction)) % 360
-        self.logger.info(
-            "Fixed rotation of %s (%s / %s) on %s Layer by %d degrees",
-            footprint.GetReference(),
-            footprint.GetValue(),
-            footprint.GetFPID().GetLibItemName(),
-            "Top" if footprint.GetLayer() == 0 else "Bottom",
-            correction,
-        )
-        return rotation
-
-    def reposition(self, footprint, position, offset):
-        """Adjust the position of the footprint, returning the new position as a wxPoint."""
-        if offset[0] != 0 or offset[1] != 0:
-            original = footprint.GetOrientation()
-            # `.AsRadians()` added in KiCAD 6.99
-            try:
-                rotation = original.AsDegrees()
-            except AttributeError:
-                # we need to divide by 10 to get 180 out of 1800 for example.
-                # This might be a bug in 5.99 / 6.0 RC
-                rotation = original / 10
-            if footprint.GetLayer() != 0:
-                # bottom angles need to be mirrored on Y-axis
-                rotation = (180 - rotation) % 360
-            offset_x = FromMM(offset[0]) * math.cos(math.radians(rotation)) + FromMM(
-                offset[1]
-            ) * math.sin(math.radians(rotation))
-            offset_y = -FromMM(offset[0]) * math.sin(math.radians(rotation)) + FromMM(
-                offset[1]
-            ) * math.cos(math.radians(rotation))
-            if footprint.GetLayer() != 0:
-                # mirrored coordinate system needs to be taken into account on the bottom
-                offset_x = -offset_x
+    def fix_rotation(self, footprint):
+        """Fix the rotation of footprints in order to be correct for JLCPCB."""
+        names = self._correction_names(footprint)
+        bottom = footprint.GetLayer() != 0
+        match = fab_rules.match_for(self.corrections, names)
+        if match:
             self.logger.info(
-                "Fixed position of %s (%s / %s) on %s Layer by %f/%f",
-                footprint.GetReference(),
-                footprint.GetValue(),
-                footprint.GetFPID().GetLibItemName(),
-                "Top" if footprint.GetLayer() == 0 else "Bottom",
-                offset[0],
-                offset[1],
+                "Fixed rotation of %s (%s / %s) on %s Layer by %d degrees",
+                names[0],
+                names[1],
+                names[2],
+                "Bottom" if bottom else "Top",
+                match[0],
             )
-            return wxPoint(position.x + offset_x, position.y + offset_y)
-        return position
+        return fab_rules.corrected_rotation(
+            self._orientation(footprint), bottom, names, self.corrections
+        )
 
     def fix_position(self, footprint, position):
         """Fix the position of footprints in order to be correct for JLCPCB."""
-        for getter in (
-            lambda: str(footprint.GetReference()),
-            lambda: str(footprint.GetValue()),
-            lambda: str(footprint.GetFPID().GetLibItemName()),
-        ):
-            match = self._find_correction(getter())
-            if match:
-                return self.reposition(footprint, position, match[1])
-        return position
+        names = self._correction_names(footprint)
+        bottom = footprint.GetLayer() != 0
+        match = fab_rules.match_for(self.corrections, names)
+        if match and (match[1][0] != 0 or match[1][1] != 0):
+            self.logger.info(
+                "Fixed position of %s (%s / %s) on %s Layer by %f/%f",
+                names[0],
+                names[1],
+                names[2],
+                "Bottom" if bottom else "Top",
+                match[1][0],
+                match[1][1],
+            )
+        x, y = fab_rules.corrected_position(
+            position.x,
+            position.y,
+            self._orientation(footprint),
+            bottom,
+            names,
+            self.corrections,
+        )
+        return wxPoint(x, y)
 
     def get_position(self, footprint):
         """Calculate position based on center of bounding box."""
@@ -406,9 +336,7 @@ class Fabrication:
         )
         with open(cpl_path, "w", newline="", encoding="utf-8") as csvfile:
             writer = csv.writer(csvfile, delimiter=",")
-            writer.writerow(
-                ["Designator", "Val", "Package", "Mid X", "Mid Y", "Rotation", "Layer"]
-            )
+            writer.writerow(fab_rules.CPL_HEADER)
             footprints = sorted(self.board.Footprints(), key=lambda x: x.GetReference())
             for fp in footprints:
                 if get_is_dnp(fp):
@@ -432,15 +360,15 @@ class Fabrication:
                     position = VECTOR2I(x1 - x2, y1 - y2)
                 position = self.fix_position(fp, position)
                 writer.writerow(
-                    [
+                    fab_rules.cpl_row(
                         part["reference"],
                         part["value"],
                         part["footprint"],
-                        ToMM(position.x),
-                        ToMM(position.y) * -1,
+                        position.x,
+                        position.y,
                         self.fix_rotation(fp),
-                        "top" if fp.GetLayer() == 0 else "bottom",
-                    ]
+                        fp.GetLayer() != 0,
+                    )
                 )
         self.logger.info("Finished generating CPL file %s", cpl_path)
 
@@ -451,38 +379,34 @@ class Fabrication:
             "lcsc_bom_cpl", True
         )
         footprints = {fp.GetReference(): fp for fp in self.board.Footprints()}
+
+        def is_dnp(reference):
+            fp = footprints.get(reference)
+            return bool(fp) and get_is_dnp(fp)
+
+        def report(reason, subject):
+            if reason == "dnp":
+                self.logger.info(
+                    "Component %s has 'Do not place' enabled: removing from BOM",
+                    subject,
+                )
+            else:
+                self.logger.info(
+                    "Component group %s has no LCSC number assigned and the setting Add parts without LCSC is disabled: removing from BOM",
+                    subject,
+                )
+
         with open(bom_path, "w", newline="", encoding="utf-8") as csvfile:
             writer = csv.writer(csvfile, delimiter=",")
-            writer.writerow(["Comment", "Designator", "Footprint", "LCSC", "Quantity"])
-            for part in self.parent.store.read_bom_parts():
-                if not add_without_lcsc and not part["lcsc"]:
-                    self.logger.info(
-                        "Component group %s has no LCSC number assigned and the setting Add parts without LCSC is disabled: removing from BOM",
-                        part["refs"],
-                    )
-                    continue
-                components = []
-                for component in part["refs"].split(","):
-                    fp = footprints.get(component)
-                    if fp and get_is_dnp(fp):
-                        self.logger.info(
-                            "Component %s has 'Do not place' enabled: removing from BOM",
-                            component,
-                        )
-                        continue
-                    components.append(component)
-                if not components:
-                    continue
-                for chunk in split_bom_designators(components):
-                    writer.writerow(
-                        [
-                            part["value"],
-                            ",".join(chunk),
-                            part["footprint"],
-                            part["lcsc"],
-                            len(chunk),
-                        ]
-                    )
+            writer.writerow(fab_rules.BOM_HEADER)
+            writer.writerows(
+                fab_rules.bom_rows(
+                    self.parent.store.read_bom_parts(),
+                    is_dnp=is_dnp,
+                    add_without_lcsc=add_without_lcsc,
+                    on_skip=report,
+                )
+            )
         self.logger.info("Finished generating BOM file %s", bom_path)
 
     def get_part_consistency_warnings(self) -> str:
@@ -490,22 +414,4 @@ class Fabrication:
 
         Returns an empty sting if all parts are ok, otherwise a otherwise a overview of parts that share a LCSC number but have different values.
         """
-        lcsc_numbers = {}
-        for item in self.parent.store.read_bom_parts():
-            if not item["lcsc"]:
-                continue
-            if item["lcsc"] not in lcsc_numbers:
-                lcsc_numbers[item["lcsc"]] = [
-                    {"refs": item["refs"], "values": item["value"]}
-                ]
-            else:
-                lcsc_numbers[item["lcsc"]].append(
-                    {"refs": item["refs"], "values": item["value"]}
-                )
-        filtered = {key: value for key, value in lcsc_numbers.items() if len(value) > 1}
-        result = ""
-        for lcsc, items in filtered.items():
-            result += f"{lcsc}:\n"
-            for item in items:
-                result += f"  - {item['refs']} -> {item['values']}\n"
-        return result
+        return fab_rules.consistency_warnings(self.parent.store.read_bom_parts())

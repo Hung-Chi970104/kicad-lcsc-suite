@@ -29,6 +29,12 @@ def configure_logging(level: int = logging.INFO) -> None:
     ``exec`` plugin dies.
     """
     logging.basicConfig(level=level, format=LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+    # ``basicConfig`` does nothing at all when the root already has handlers, and
+    # by the time this runs it does: importing ``shared`` pulls in
+    # ``derive_params``, which calls ``basicConfig(DEBUG)`` of its own at import.
+    # So the level has to be set outright, or the log pane fills with a DEBUG
+    # line per part and the app looks like it is malfunctioning.
+    logging.getLogger().setLevel(level)
     # Both are chatty at DEBUG and neither tells us anything we want.
     logging.getLogger("requests").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)

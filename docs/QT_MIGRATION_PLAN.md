@@ -118,7 +118,7 @@ plan was written, not assumed:
 | Create `LCSC` field where none existed | ✅ verified by re-read |
 | Exclude-from-BOM / exclude-from-POS / DNP attributes | ✅ plain booleans |
 | Qt offscreen render → self-screenshot | ✅ no display needed |
-| Footprint position + rotation (for CPL) | ⚠️ exposed on the API, **not exercised** |
+| Footprint position + rotation (for CPL) | ✅ exercised in Phase 6, byte-identical output |
 
 ### Four traps — read before writing code
 
@@ -1269,28 +1269,339 @@ semantics, and the `…` / `?` / `0` distinction.
 - **`live_ipc_check.py` was not re-run**, because `kicad_bridge` was not touched
   in this phase. Re-run it whenever it is.
 
-### Resume here → Phase 5
+### Phase 5 — the remaining dialogs ✅
+
+Five small windows instead of one large one, and the phase that closes the three
+items the resume note had been carrying since Phase 2. Each of them was a feature
+already *drawn* by code that landed earlier and that nothing could reach:
+
+1. **The three `Add correction …` row-menu entries** were greyed out because the
+   dialog they open did not exist. `HANDLED_ROW_MENU` is now the whole menu.
+2. **`PartTableModel.set_standard_trigger_refs()` was called by nobody**, so the
+   amber Standard-mode advisory the model has painted since Phase 2 could not be
+   produced. The estimator sets it — see the enrichment note below, because
+   getting there needed more than wiring.
+3. **Nothing toggled match highlighting at runtime.** `SettingsDialog.changed` →
+   `SuiteController.apply_setting` → `params_delegate.set_enabled()`.
+
+| Module | What it owns |
+|---|---|
+| `ui/settings_dialog.py` | §5.3, one column, inverted labels, the library picker |
+| `ui/mappings_dialog.py` | §5.5 — browse, delete, CSV import/export |
+| `ui/corrections_dialog.py` | §5.4 — Add/Edit, the two databases, the download |
+| `ui/part_details_dialog.py` | §5.6 — the assembly record, both ladders, the links |
+| `ui/bom_estimator.py` | §5.8 — the presenter half of `bom_widget.py` |
+
+Screens: `settings`, `mappings`, `corrections`, `part-details` and
+**`mainwindow-estimate`**, each in both appearances. The last one is the payoff:
+a real two-line cost summary where every previous main-window screenshot said
+"no assigned BOM parts", and `C1`/`C2` in advisory amber next to
+`mainwindow-unassigned`'s red, which is the first time both colours can be
+compared as rendered rather than as a claim.
+Tests: `tests/test_qt_dialogs.py` (64). 671 → 735 overall.
+
+#### Where a dialog's writes live — a refinement, not a reversal
+
+Phase 3's rule is *the window builds, displays and reports; the controller
+decides and writes*, and it names the mappings table explicitly. Phase 5 refines
+it rather than breaking it:
+
+> The controller owns writes that are a **consequence** of an action taken
+> somewhere else. A dialog whose entire purpose is to edit one store is that
+> store's editor and owns its own writes.
+
+Assigning a part also remembers a mapping — that pairing is a decision, and it
+stays in `SuiteController`. Deleting a row from the Mappings Manager is not; nor
+is ticking a checkbox in Settings. Routing those through the controller would
+have added five pass-through methods that decide nothing.
+
+What the controller does keep is every **consequence**: `SettingsDialog.changed`
+and `CorrectionsDialog.corrections_changed` are signals, and `apply_setting` is
+where a change becomes a repaint, a rebuild, or a reopened database. A setting
+that is right in the file while the window is stale reads as a broken checkbox.
+
+#### The estimator needed a lookup, not just wiring
+
+`set_standard_trigger_refs` had nothing to set because
+**`component_product_type` is on neither the board nor the part cache.** It comes
+from JLC's assembly record, one request per distinct number, which the wx plugin
+fetches in a background thread through `enrichment/providers.py`.
+
+That provider is *not* reused: it constructs `lcsc_api.LCSC_API` and carries its
+own transport, which is precisely the shape Phase 4 found a hole in
+(`jlc_search`'s vendored fallback). `BomEstimator.enrich()` asks
+`search_source.assembly_detail()` instead — one new method, going through
+`api.py`'s cache and host breaker like everything else — and reads the same two
+keys `_normalize` reads. So the probe and the tests are offline by construction.
+
+Four things about it worth knowing:
+
+- **An unanswered lookup writes nothing.** The wx version persists the empty
+  result, which means a host that 403s today overwrites metadata fetched
+  correctly yesterday and the estimate drops to Economic for a reason nothing on
+  screen can explain. Not writing it means the store keeps offering the number as
+  a target, so a session-scoped `_unanswered` set stops it being re-asked.
+  Reopening the window retries — the same gesture as the Explorer's
+  `Refresh data`.
+- **Pacing is derived from the source, not passed in.** `ENRICH_INTERVAL` is the
+  wx provider's one second, enforced by sleeping on a one-thread pool; a source
+  that reports `offline` gets zero, because a capture has no host to be polite
+  to. Passing it would have meant the probe sleeping 29 seconds per screen, and
+  the way that ends is with the pacing deleted.
+- **Omitting a source means no network, never "the default one".** The estimator
+  is handed the *injected* source, not `controller.source()`; `__main__` is the
+  one caller that passes one. Every existing test builds a controller without
+  one, and the lazy accessor would have quietly given all of them a `LiveSource`
+  with a request loop attached.
+- **`FootprintView.side` replaced the pcbnew walk.** `_get_board_standard_context`
+  calls `FindFootprintByReference` and `IsFlipped()` per part, wrapped in two
+  `suppress` blocks because SWIG objects die between layout rebuilds. The bridge
+  computes the side once; the walk is a dict lookup and the guards have nothing
+  to guard.
+
+#### Departures from the plan and from the wx plugin
+
+- **§5.4 lists five columns; the corrections table has four.** `Regex` and
+  `Pattern` are one column written down twice — the table and the Add/Edit box
+  call it Regex, the CSV export calls it Pattern. Also, `Update` does not update
+  the selected row: it downloads the community table from Matthew Lai's
+  JLCKicadTools repo. It is the only control in these five windows that touches
+  the network, and it takes `allow_network=False` from the probe and the tests.
+- **`lcsc_priority`'s label says "board", not "schematic".** The wx wording is
+  "LCSC numbers from schematic have priority"; the value it compares is the
+  footprint's own field. This app has two explicit schematic buttons of its own
+  (Phase 7), so naming the wrong one of two things it can really do is worse
+  than departing from the original.
+- **The corrections collision prompt quotes the right rule.** `save_correction`
+  reuses its loop variable after the loop, so the values it compares — and shows
+  the user — come from the *last* row in the grid rather than from the rule whose
+  pattern collides. `_row_for` reads the database.
+- **Both CSV importers detect a header instead of assuming one.**
+  `next(csvreader)` unconditionally is how a headerless file silently loses its
+  first row, and every other row importing fine is what makes it invisible.
+- **`Add correction by …` opens one dialog.** The wx handler loops over the
+  selection and opens a *modal* dialog per row, so twenty selected capacitors are
+  twenty dialogs in a queue — the same shape as the clipboard loop Phase 3 found.
+- **The two swapped bitmaps per settings row are gone**, and with them
+  `create_disabled_bitmap`. The inverted *labels* stay: they are the only thing
+  in that dialog that says what the unticked state does.
+- **Part Details is modeless and one at a time**; the other four are modal. It is
+  a reference window you keep open while working in the list, so it is opened
+  with `build_*`/`open_*` like the Explorer — and the `build_` half is what the
+  probe and the tests use, because `exec()` never returns to a test.
+
+#### Known limitations, stated rather than skipped
+
+- **`mainwindow-estimate` seeds `component_product_type` for two references
+  rather than fetching it.** The explorer capture holds assembly records for its
+  own search results — `10nF 0402`, where all 100 are `componentProductType: 0` —
+  and none for this board's parts. The seed writes exactly what `enrich()` writes
+  when it runs, so the colour and the summary are produced by the real path from
+  the real database; only the provenance of that one flag is short-circuited.
+- **`part-details` shows no `JLC Price for …` rows.** `jlcPrices` is genuinely
+  `None` on the captured records; the LCSC ladder has six bands and renders. The
+  JLC branch is covered by a test rather than by the screenshot.
+- **The corrections sample in the probe is not the community table.** Six
+  patterns built from the fixture board's own footprints with illustrative
+  values, because shipping a half-remembered copy of the real rotation table is a
+  file someone would mistake for authoritative.
+- **Windows verification still not run**, for any phase.
+- **`live_ipc_check.py` was not re-run** — `kicad_bridge` is untouched in this
+  phase. Re-run it whenever it is.
+
+### Phase 6 — BOM / CPL export ✅
+
+The `Export BOM / CPL` button has been in the toolbar since Phase 1 and
+connected to nothing. It writes both files now, and **byte-identically to the wx
+plugin** — verified, not assumed; see below.
+
+| Module | What it owns |
+|---|---|
+| `kicad_lcsc_suite/fab_rules.py` | the rules, with no pcbnew in them — **both halves import this** |
+| `lcsc_suite/export.py` | `Exporter`: where a reference, a position and an angle come from now |
+| `kicad_bridge.origin_nm` / `.pad_centers_nm` | the placement geometry, read only when a CPL is written |
+
+Screens: **`export-summary`**, in both appearances — the export has no window of
+its own, so the report is the whole of its interface.
+Tests: `tests/test_qt_export.py` (21). 735 → 763 overall.
+
+#### §6 was wrong about one thing: those writers were not pure logic
+
+The plan says the two writers "already exist in `fabrication.py` as pure logic"
+and that the work is "a UI entry point plus reading footprint positions through
+the bridge". The *rules* were pure. The writers were not: they read
+`fp.GetReference()`, built a `wxPoint`, and lived in a module whose first import
+is `pcbnew`. There was nothing importable to call.
+
+So the split happened for real. `fab_rules.py` holds the correction matching,
+the rotation and offset arithmetic, the designator chunker, the grouping and
+both headers; `fabrication.py` keeps the Gerber path and delegates everything
+else to it. That is what makes the byte-comparison mean anything — the two
+halves do not merely follow the same rules, they **run the same functions**, and
+`test_the_wx_plugin_delegates_to_the_shared_rules` fails if a second copy of any
+of it reappears.
+
+#### Three pieces of pcbnew arithmetic, measured rather than assumed
+
+Every one of these changes the last digit of a coordinate, and a CPL is compared
+byte for byte or not at all. Measured by running KiCad 10.0.3's own Python:
+
+* `FromMM(mm)` is `int(mm * 1e6)` — it **truncates**, so `-0.1mm` is exactly
+  `-100000` and a rounded implementation is off by one on half the values;
+* `wxPoint(double, double)` truncates too (`1.6` → `1`, `-1.6` → `-1`), so a
+  correction offset is added as a float and cut, never rounded;
+* `BOX2I::GetCenter()` is `position + size // 2`, so a box of odd width centres
+  one nanometre *below* the middle.
+
+Hence the rule the module opens with: **integer nanometres until the last line**.
+Dividing early is what turns `123.456789` into `123.45678900000001`.
+
+#### The position is the pad centre, and that is not a detail
+
+`FootprintView.position_mm` is the footprint's origin — wherever its author put
+it. A CPL wants the middle of the part, which `fabrication.get_position` has
+always taken as the centre of the merged bounding box of every pad. Building a
+CPL from `position_mm` would have been wrong on nearly every row while looking
+entirely plausible.
+
+`Board.pad_centers_nm()` reads it, asking KiCad for the boxes rather than
+reimplementing padstack geometry, and asking **once for every pad on the board**
+rather than once per footprint — 110 footprints and 379 pads is one round trip,
+not four hundred. It is deliberately *not* a `FootprintView` field: the part list
+refreshes on every assignment, and a snapshot carrying it would make every reload
+pay for a file nobody has asked for. Same for `origin_nm()`, the drill/place
+origin every coordinate is measured from — unset it is `(0, 0)`, which is why
+getting it wrong is invisible on most boards.
+
+The board fixture gained `pad_boxes` for all 379 pads, laid out so that **every
+footprint's pad centre is exactly 0.1mm from its origin**. A fixture where the
+two agreed would have hidden the one distinction the geometry read exists for.
+Eleven footprints have no pads at all, which exercises the fallback to the
+origin.
+
+#### The byte-comparison, and how it was made to mean something
+
+Run against KiCad 10.0.3 with the real 110-footprint board open, 59 real
+corrections loaded (three of which fire), 8 do-not-place parts and 3 pad-less
+footprints:
+
+```text
+inputs: 110 live, 110 wx, 0 mismatched, 0 live-only
+=== CPL: BYTE-IDENTICAL (99 wx lines, 99 qt) ===
+=== BOM: BYTE-IDENTICAL (31 wx lines, 31 qt) ===
+```
+
+Two things made it evidence rather than a coincidence:
+
+- **The wx side was the real `Fabrication`**, running under KiCad's own Python
+  against a **copy** of the board in the scratchpad, with the real corrections
+  database — not a reimplementation and not a stub.
+- **The inputs were compared first.** A diff against the `CPL-PCB_new.csv` sitting
+  in the user's project from the day before showed dozens of differences, all of
+  them real board edits — references renumbered, parts added, `C13585` reassigned
+  to `C1691`. Comparing outputs without first proving both halves see the same
+  board would have been reading noise. `wx_inputs.json` dumps value, footprint,
+  pad centre, angle, side and DNP per reference from pcbnew; the Qt side asserts
+  all 110 match over IPC before writing anything.
+
+This also retires the last ⚠️ in §2's capability table: footprint position and
+rotation are now exercised, not merely exposed.
+
+#### Three regressions found by looking at the screenshots
+
+None of these was caught by a test, and two of them were shipped by Phase 5.
+
+1. **`Save mappings` had fallen off the toolbar.** Phase 5 turned the BOM
+   estimate summary into *two* lines — an estimate has a cost breakdown where
+   "no assigned BOM parts" does not — and those 22px came straight out of the
+   right-hand toolbar's budget, leaving it 9px short and the tenth button behind
+   an extension arrow. Exactly the "scrolled out of sight on a default-sized
+   window" problem §5.1 records about the wx original, which is the one thing
+   that toolbar was rebuilt to avoid. `test_every_part_button_fits_without_an_
+   extension_arrow` did not catch it because a bare `MainWindow` has no estimate
+   to show; `test_the_buttons_still_fit_once_the_estimate_has_two_lines` sets the
+   text and does. The room came from `LogPane`'s **minimum** height (120 → 96) —
+   `LOG_HEIGHT` is only the initial split, and a splitter minimum silently wins
+   over the sizes asked for.
+2. **The log pane was full of DEBUG.** `configure_logging(INFO)` was a no-op:
+   `basicConfig` does nothing when the root already has handlers, and importing
+   `shared` pulls in `derive_params`, which calls `basicConfig(DEBUG)` at import.
+   The level is now set outright, and `LogPane.install` puts the level on its own
+   handler rather than trusting the root's.
+3. **The Explorer's "Inline below" preference never reached the pane.** The
+   combo is set to the restored value before its handler is connected — correctly,
+   so that restoring a preference does not count as changing it — but nothing else
+   told `DetailPane`, so it stayed in its constructor default. A session that had
+   chosen inline reopened with the *column* arrangement crammed into the inline
+   row: previews at full width, availability and parameters clipped below the
+   fold. Reported by the user with a screenshot; invisible to the probe, which
+   always starts from shipped defaults.
+
+#### The rest of what the user asked for, and why each was a real bug
+
+- **Double-clicking a part opened a text field asking for an LCSC number.** Nobody
+  knows LCSC numbers by heart. Both gestures that mean "find a part for this
+  footprint" — the double-click and the `Assign LCSC number` button — now open the
+  Explorer with the row's own search already run, which is what the wx plugin's
+  `select_part` does. The keyword is the wx rule too: value **plus package**, with
+  a resistor's value given the ohm sign, because `1uF` matches fifteen thousand
+  parts and `1uF 0805` is a search. A mixed selection seeds nothing rather than
+  picking one arbitrarily. Typing a known number moved to the row menu as
+  `Enter LCSC number…`; it still exists because pasting one out of a datasheet is
+  a real thing to do, and `Paste LCSC` only reaches the clipboard.
+- **The toolbar icon deliberately does *not* re-search.** "Open the catalogue" and
+  "find a part for this row" are different asks, and throwing away a search
+  already on screen to answer the wrong one is worse than doing nothing.
+- **The parametric filter panel was fixed at 74px**, so a nine-attribute
+  capacitor search showed two rows of five and hid the rest behind a scrollbar,
+  while a three-attribute one wasted its second row. It sizes to its rows now,
+  between 30 and 132px — bounded because it competes with a result grid whose
+  rows are 140px tall. Counted from the row count, **not** read off the layout:
+  `QGridLayout.sizeHint()` answers with its contents margins and nothing else
+  until the event loop has processed the widgets just added to it, and
+  `invalidate()` and `activate()` both leave it at 4px. Sizing from the hint
+  collapsed the panel to its minimum every time, which is a worse bug than the
+  one being fixed and was caught only by re-rendering and looking.
+- **The inline detail pane** had its stock card floating vertically centred with
+  a band of nothing above and below it, and its footnote elided to "what JLC can
+  place on a…". The card is top-aligned with the caveat list now and wide enough
+  for the longer of the two footnotes, and the row takes the pane's own size hint
+  instead of a flat 400px.
+
+#### Known limitations, stated rather than skipped
+
+- **The `Missing prices N` gap is still only in the estimate line.** §6's note
+  that the BOM writer reports the same gap is not true of the wx writer and is
+  not true of this one either: an unpriced part is still a BOM row. Worth doing;
+  it is a feature, and parity comes first.
+- **Windows verification still not run**, for any phase.
+- **`live_ipc_check.py` was not re-run.** `kicad_bridge` gained two read-only
+  methods and no write path changed, and both new methods were exercised against
+  the live board by the export check above. Re-run it when a write changes.
+- The export writes into `<project>/jlcpcb/production_files`, the same directory
+  the wx plugin uses, so a project worked on with both halves does not grow two
+  sets of files. That is deliberate, and it means the two can overwrite each
+  other's output — which is correct, because they produce the same bytes.
+
+### Resume here → Phase 7
 
 Read this whole §10, then `git log --oneline` for the phase commits. Every screen
-in `docs/screens/` is current, and Phases 0–4 are done.
+in `docs/screens/` is current, and Phases 0–6 are done.
 
-**Phase 5 is the remaining dialogs**: Settings (§5.3), Corrections (§5.4),
-Mappings (§5.5), Part Details (§5.6) and the BOM estimator (§5.8). It is five
-small windows rather than one large one, and three things are waiting on it:
+**Phase 7 is schematic sync** (§6): `schematicexport.py` and `schematicimport.py`
+already parse `.kicad_sch` directly and port unchanged — Phase 0 already gave
+`load_schematic` the optional `version` argument it needs, and the app has the
+KiCad version over IPC. Only the two buttons and their warning dialogs are new.
 
-1. **The three `Add correction …` row-menu entries.** Greyed out since Phase 3;
-   `controller.HANDLED_ROW_MENU` is what says so. They need the Corrections
-   dialog.
-2. **`PartTableModel.set_standard_trigger_refs()` is called by nobody**, so the
-   amber standard-mode advisory is unreachable through the UI. The BOM estimator
-   is what sets those references.
-3. **Nothing toggles match highlighting at runtime.** The delegate reads
-   `highlighting.matches` at build time and exposes `set_enabled()`; the checkbox
-   that would call it lives in the Settings dialog.
+**The rule that governs the whole phase is in the memory and in §5.1: board↔
+schematic sync is never automatic.** Two explicit buttons, each warning about
+what it overwrites.
 
-Also still open, and older: **`schematic_cleared_refs` and
-`schematic_sync_pending` are maintained but read by nobody** — Phase 7 consumes
-them.
+Waiting for it since Phase 3: **`schematic_cleared_refs` and
+`schematic_sync_pending` are maintained but read by nobody.** They are tracked
+from the assignment path because only it knows a removal happened, and the
+distinction they carry — a reference *deliberately cleared* versus one merely
+blank — cannot be reconstructed later. `To schematic` is what consumes them.
 
 House rules that have been followed so far and should keep being followed:
 

@@ -62,6 +62,11 @@ def legacy(name: str) -> ModuleType:
 # then fails, which is exactly what a test suite produces.
 highlight_terms = legacy("highlight_terms")
 derive_params = legacy("derive_params")
+# The BOM/CPL rules, split out of fabrication.py so this half can reach them.
+# The rest of that module is the Gerber plot path, which is out of scope, and
+# it imports pcbnew at the top — so importing fabrication here is not merely
+# undesirable, it is impossible.
+fab_rules = legacy("fab_rules")
 dblib = legacy("dblib")
 library = legacy("library")
 schematicexport = legacy("schematicexport")
@@ -87,6 +92,7 @@ __all__ = [
     "dblib",
     "derive_params",
     "enrichment_providers",
+    "fab_rules",
     "highlight_terms",
     "lcsc_api",
     "lcsc_details",

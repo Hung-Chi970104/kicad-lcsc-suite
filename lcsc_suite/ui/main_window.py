@@ -86,10 +86,19 @@ MINIMUM_SIZE = (1000, 600)
 #: labels to read in full, which is worth 24px of table width.
 PART_TOOLBAR_WIDTH = 152
 
-#: Initial height of the log pane. The wx window gives it 150; 128 here, because
-#: the ten per-part buttons need the difference (see _build_part_toolbar) and the
-#: splitter lets anyone who wants a taller log drag for it.
-LOG_HEIGHT = 128
+#: Initial height of the log pane. The wx window gives it 150; 128 in Phase 1,
+#: and 112 since Phase 6, because the ten per-part buttons need the difference
+#: (see ``_build_part_toolbar``) and the splitter lets anyone who wants a taller
+#: log drag for it.
+#:
+#: The second reduction is Phase 5's doing and was found by looking at a
+#: screenshot. The BOM estimate summary is **two** lines where it used to be
+#: one — an estimate has a cost breakdown and "no assigned BOM parts" does not —
+#: and those 22px came out of the toolbar's budget, leaving it 9px short and
+#: `Save mappings` behind an extension arrow. Exactly the "scrolled out of sight
+#: on a default-sized window" problem §5.1 records about the wx original, which
+#: is the one thing this toolbar was rebuilt to avoid.
+LOG_HEIGHT = 112
 
 #: Part-list columns, in §5.1's order, with the wx plugin's widths. Defined
 #: alongside the model that fills them, so a new column cannot be added to one
@@ -110,6 +119,7 @@ UNDO_TOOLTIP_EMPTY = (
 #: §5.1's row context menu: ``(id, label)``, ``None`` for a separator. Ids are
 #: what a controller dispatches on; the labels are free to be reworded.
 ROW_MENU = (
+    ("enter-lcsc", "Enter LCSC number…"),
     ("copy-lcsc", "Copy LCSC"),
     ("paste-lcsc", "Paste LCSC"),
     (None, None),
@@ -131,6 +141,13 @@ class MainWindow(QMainWindow):
     selection_changed = Signal(list)
     #: Emitted as ``(entry id, references)`` when a row-menu entry is chosen.
     row_menu_triggered = Signal(str, list)
+    #: Emitted with the selected references when a row is double-clicked.
+    part_activated = Signal(list)
+    #: Emitted after the part list has been rebuilt from the board and the
+    #: project database. The BOM estimator recomputes on it rather than being
+    #: called from each of the six places that reload — one connection cannot be
+    #: forgotten the way a seventh call site can.
+    parts_reloaded = Signal()
 
     def __init__(self, board: Board, settings=None, parts=None, parent=None) -> None:
         super().__init__(parent)
@@ -162,6 +179,9 @@ class MainWindow(QMainWindow):
         log.info("Board %s — %d footprints", info.name, len(board.footprints()))
         self.part_model.set_standard_trigger_highlighting_enabled(
             bool(self._setting("general", "highlight_standard_parts", True))
+        )
+        self.set_estimator_visible(
+            bool(self._setting("general", "bom_estimator_show", True))
         )
         self.reload_parts(keep_selection=False)
         self.set_part_buttons_enabled(False)
@@ -417,8 +437,12 @@ class MainWindow(QMainWindow):
 
         table.selectionModel().selectionChanged.connect(self._on_selection_changed)
         table.customContextMenuRequested.connect(self._on_context_menu)
-        table.doubleClicked.connect(lambda _: self.assign_action.trigger())
+        table.doubleClicked.connect(self._on_part_activated)
         return table
+
+    def _on_part_activated(self, _index) -> None:
+        """Report a double-clicked row, with what was selected when it happened."""
+        self.part_activated.emit(self.selected_references())
 
     def set_model(self, model) -> None:
         """Attach a model and apply the column widths from :data:`COLUMNS`."""
@@ -544,7 +568,10 @@ class MainWindow(QMainWindow):
             bar,
             "Assign LCSC number",
             "mdi-database-search-outline.png",
-            "Assign an LCSC number to the selected footprints",
+            "Search the LCSC catalogue for these footprints, seeded with their "
+            "value and package. Double-clicking a row does the same.\n\n"
+            "To type a number you already have, use Enter LCSC number… in the "
+            "row's right-click menu.",
         )
         self.remove_action = self._action(
             bar,
@@ -694,6 +721,18 @@ class MainWindow(QMainWindow):
         """Set the estimator status line."""
         self.summary_label.setText(text)
 
+    def set_estimator_visible(self, visible: bool) -> None:
+        """Show or hide the board-count row and the cost summary together.
+
+        Both, because half an estimator is worse than none: the `Boards:` spin
+        box on its own looks like a setting that does something, and the summary
+        line on its own cannot be changed. Settings' `Show BOM cost estimator`
+        drives this.
+        """
+        visible = bool(visible)
+        self.estimator_row.setVisible(visible)
+        self.summary_label.setVisible(visible)
+
     def set_progress(self, value: int | None) -> None:
         """Show a progress figure, or hide the bar when passed ``None``."""
         if value is None:
@@ -716,6 +755,7 @@ class MainWindow(QMainWindow):
             self.select_references(selected)
         assigned = sum(1 for row in self.part_model.rows() if row.assigned)
         log.info("%d parts, %d assigned", self.part_model.rowCount(), assigned)
+        self.parts_reloaded.emit()
 
     def _on_hide_bom_toggled(self, checked: bool) -> None:
         """Show or hide the parts excluded from the BOM."""
