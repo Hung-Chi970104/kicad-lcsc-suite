@@ -67,26 +67,37 @@ jobs:
         # rather than byte-for-byte: font rasterisation differs between the
         # runner and a developer's machine, which would make this a permanent
         # false failure.
+        #
+        # TOLERANCE exists because a screen that does not call resize() takes
+        # its size from its contents, and its contents are text. The first
+        # green run measured exactly that: 34 of 38 screens matched macOS to
+        # the pixel, and the four that did not were assign-dialog (Δ3px) and
+        # export-summary (Δ11px) — the two dialogs that size themselves. A
+        # missing PNG stays a hard failure; only the size gets a budget.
         run: |
           python - <<'PY'
           import os, sys
+          TOLERANCE = 16
           committed, rendered = "docs/screens", "/tmp/screens"
           missing, wrong_size = [], []
           for name in sorted(os.listdir(rendered)):
+              if not name.endswith(".png"):
+                  continue
               target = os.path.join(committed, name)
               if not os.path.isfile(target):
                   missing.append(name)
                   continue
               from PySide6.QtGui import QImage
               a, b = QImage(target), QImage(os.path.join(rendered, name))
-              if a.size() != b.size():
+              if (abs(a.width() - b.width()) > TOLERANCE
+                      or abs(a.height() - b.height()) > TOLERANCE):
                   wrong_size.append(f"{name}: committed {a.size()}, rendered {b.size()}")
           if missing:
               print("Screens with no committed PNG — run scripts/qt_probe.py and commit:")
               for name in missing:
                   print(f"  docs/screens/{name}")
           if wrong_size:
-              print("Screens whose committed PNG is a different size:")
+              print(f"Screens more than {TOLERANCE}px from their committed PNG:")
               for line in wrong_size:
                   print(f"  {line}")
           sys.exit(1 if missing or wrong_size else 0)
@@ -166,6 +177,16 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
           python -m pip install pytest ruff==0.14.14 "PySide6>=6.7,<7"
+
+      - name: Install the libraries Qt needs to import at all
+        # The suite builds real widgets, so importing PySide6 has to succeed
+        # here for the same reason it does in the render job — `libEGL.so.1` is
+        # loaded when the QtGui module is imported, offscreen or not.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0 libdbus-1-3
       - name: pytest
         # Nothing under tests/ imports wx, so the whole suite runs on a bare
         # Python — it is the safety net for the logic half through every phase.
