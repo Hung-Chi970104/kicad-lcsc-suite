@@ -59,6 +59,40 @@ from .undo import UndoStack
 
 log = logging.getLogger(__name__)
 
+#: How many trailing path components the report spells out.
+#:
+#: ``QMessageBox`` sizes itself to its informative text, so whatever goes on
+#: this line decides how wide the dialog is. An absolute path made that a
+#: property of where the user keeps their projects: the committed
+#: ``export-summary.png`` is 408px and re-rendering it gave 411px, purely
+#: because the probe writes to a temporary directory whose name changes per
+#: run. A deeply-nested real project made it wider still, and a Windows path
+#: wider again — so the one screen that reports a filesystem path could never
+#: have passed a cross-platform comparison.
+#:
+#: Three components is ``<project>/jlcpcb/production_files``, which is the
+#: whole of the answer: the export always lands in ``jlcpcb/production_files``
+#: under the project, so the absolute prefix carries no information the user
+#: does not already have. The full path is in the details pane for the times it
+#: does — see ``build_export_report``.
+PATH_COMPONENTS = 3
+
+
+def export_location(directory: str) -> str:
+    """Render *directory* as its last few components, for the report line.
+
+    Returned with a leading ``…/`` when anything was dropped, so the line is
+    never mistaken for an absolute path. The result's length is bounded by the
+    project directory's own name rather than by its depth, which is what makes
+    the dialog the same size on every machine.
+    """
+    parts = directory.replace("\\", "/").rstrip("/").split("/")
+    kept = [part for part in parts[-PATH_COMPONENTS:] if part]
+    if len(parts) > len(kept):
+        return "…/" + "/".join(kept)
+    return "/".join(kept)
+
+
 #: Row-menu entries this controller answers. Every one of them, since Phase 5
 #: brought the Corrections dialog the three ``Add correction …`` entries were
 #: waiting for. ``MainWindow.set_row_menu_enabled`` still takes the set rather
@@ -946,11 +980,12 @@ class SuiteController(QObject):
 
     def build_export_report(self, result) -> QMessageBox:
         """Say what was written and, as importantly, what was left out."""
+        directory = os.path.dirname(result.bom_path)
         lines = [
             f"BOM: {result.bom_rows} rows",
             f"CPL: {result.cpl_rows} rows",
             "",
-            os.path.dirname(result.bom_path),
+            export_location(directory),
         ]
         # The counts are the answer to "why is my BOM shorter than my board",
         # which is the first question anyone asks of a file like this. The wx
@@ -971,11 +1006,17 @@ class SuiteController(QObject):
         box.setIcon(QMessageBox.Icon.Information)
         box.setText("Wrote BOM and CPL.")
         box.setInformativeText("\n".join(lines))
+        # The elided path above says roughly where; this says exactly where, and
+        # is selectable, which is what somebody about to open a file terminal
+        # actually needs. Always present, so "Show Details…" is never a button
+        # that appears only when something went wrong.
+        details = [f"Written to:\n{directory}"]
         if result.warnings:
-            box.setDetailedText(
+            details.append(
                 "These LCSC numbers are used for more than one value:\n\n"
                 + result.warnings
             )
+        box.setDetailedText("\n\n".join(details))
         return box
 
     # -- board <-> schematic (Phase 7) --------------------------------------

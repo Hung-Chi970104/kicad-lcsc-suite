@@ -182,6 +182,9 @@ split-on-trailing-comma = false
 # its entire output, and it adds the repo root to sys.path before importing the
 # package, so its imports cannot all live at the top either.
 "scripts/live_ipc_check.py" = ["T201", "E402"]
+# The cross-platform layout gate. Its printed report is its entire output, and
+# the two properties on Divergence say what they are in one line each.
+"scripts/compare_geometry.py" = ["T201", "D102", "D103", "D105"]
 # Board access has to work with or without kipy installed (the fixture backend
 # is what CI and the tests use), so `import kipy` is deferred to the call that
 # needs it. Protocol declarations carry their contract in the class docstring.

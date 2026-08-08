@@ -27,11 +27,13 @@ Exit status is nonzero if any screen raised while building.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
 import sys
 import tempfile
 import traceback
+from typing import Optional
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -54,6 +56,12 @@ from lcsc_suite.config import DEFAULTS, Settings  # noqa: E402
 
 DEFAULT_FIXTURE = os.path.join(_ROOT, "lcsc_suite", "fixtures", "board.json")
 DEFAULT_OUTPUT_DIR = os.path.join(_ROOT, "docs", "screens")
+
+#: The name of the throwaway project directory every screen renders against.
+#: It matches the fixture board's own file so the one screen that shows a path
+#: reads like a real project rather than like a temporary directory. Fixed
+#: rather than generated — see ``open_board``.
+PROJECT_NAME = "tempctrl"
 
 #: How long to let the event loop run before grabbing. Layout, deferred column
 #: sizing and any single-shot timer a screen uses to finish itself off all need
@@ -818,14 +826,42 @@ def open_board(args):
     really does create ``<project>/jlcpcb/project.db``, and a probe run must not
     write into the checkout or carry state between runs.
 
+    The directory is a **fixed name inside** a fresh temporary one, rather than
+    the temporary one itself. ``export-summary`` puts the project directory on
+    screen, and ``mkdtemp``'s random suffix is a fixed number of *characters* in
+    a proportional font — so the same screen rendered at 354px, 346px and 353px
+    on three consecutive runs, and the CI check that compares committed sizes
+    was deciding by coin flip which of those it had.
+
     ``--live`` is the exception — there is one KiCad and one open board, and the
     live path is for looking at real data, not for reproducible screenshots.
     """
     if args.live:
         return kicad_bridge.connect()
     board = kicad_bridge.open_fixture(args.fixture)
-    board.relocate(tempfile.mkdtemp(prefix="lcsc-probe-project-"))
+    project = os.path.join(tempfile.mkdtemp(prefix="lcsc-probe-"), PROJECT_NAME)
+    os.makedirs(project, exist_ok=True)
+    board.relocate(project)
     return board
+
+
+@contextlib.contextmanager
+def _capture(path: Optional[str]):
+    """Send everything printed in the block to *path*, or leave stdout alone.
+
+    The geometry dump is a **cross-platform reference**, so it has to be
+    produced by a command spelled identically on macOS, Linux and Windows —
+    which rules out piping stdout through ``grep`` to strip the progress lines.
+    """
+    if not path:
+        yield
+        return
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    with (
+        open(path, "a", encoding="utf-8", newline="\n") as handle,
+        contextlib.redirect_stdout(handle),
+    ):
+        yield
 
 
 def render(name: str, context: Context, output_dir: str, mode: str) -> tuple[bool, str]:
@@ -844,12 +880,15 @@ def render(name: str, context: Context, output_dir: str, mode: str) -> tuple[boo
             f"{name}: {pixmap.width()}x{pixmap.height()} -> "
             f"{os.path.relpath(target, _ROOT)}"
         )
-        if context.args.geometry:
-            print(f"--- {name} geometry ---")
-            dump_tree(widget)
-            for view in _descendants(widget):
-                if hasattr(view, "horizontalHeader") and hasattr(view, "columnWidth"):
-                    dump_table(view, view.objectName() or type(view).__name__)
+        if context.args.geometry or context.args.geometry_out:
+            with _capture(context.args.geometry_out):
+                print(f"--- {name}{suffix} geometry ---")
+                dump_tree(widget)
+                for view in _descendants(widget):
+                    if hasattr(view, "horizontalHeader") and hasattr(
+                        view, "columnWidth"
+                    ):
+                        dump_table(view, view.objectName() or type(view).__name__)
         widget.close()
         widget.deleteLater()
         settle(50)
@@ -893,6 +932,14 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--geometry", action="store_true", help="also dump the widget tree and columns"
     )
+    parser.add_argument(
+        "--geometry-out",
+        metavar="FILE",
+        help=(
+            "write the geometry dump to FILE instead of stdout. This is the "
+            "cross-platform reference: run it on two platforms and diff."
+        ),
+    )
     parser.add_argument("--list", action="store_true", help="list the screens and exit")
     args = parser.parse_args(argv)
     # INFO, so the log pane shows what a real session shows. store.py logs a
@@ -914,6 +961,14 @@ def main(argv=None) -> int:
         )
 
     modes = ("light", "dark") if args.theme == "both" else (args.theme,)
+    if args.geometry_out:
+        # Truncate once here rather than per screen: ``_capture`` appends, so
+        # each screen adds to one report, and a second run must replace that
+        # report rather than double it.
+        os.makedirs(
+            os.path.dirname(os.path.abspath(args.geometry_out)) or ".", exist_ok=True
+        )
+        open(args.geometry_out, "w", encoding="utf-8").close()
     failures = []
     live_board = None
     for mode in modes:
