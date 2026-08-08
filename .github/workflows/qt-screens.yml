@@ -23,7 +23,13 @@ on:
       # legacy package, so a change there can alter what renders.
       - "kicad_lcsc_suite/**"
       - "scripts/qt_probe.py"
+      # The cross-platform gate itself. Left out at first, so the commit that
+      # rewrote it did not run it — a gate that does not run on changes to the
+      # gate is the one file in the list that most needs to be here.
+      - "scripts/compare_geometry.py"
       - "docs/screens/**"
+      - "tests/**"
+      - "pyproject.toml"
       - ".github/workflows/qt-screens.yml"
   pull_request:
   workflow_dispatch:
