@@ -25,11 +25,22 @@ ENV/
 jlcpcb/
 corrections/
 dev/
-# The wx plugin writes this into its own package directory (helpers.PLUGIN_PATH).
-# The Qt app keeps its own copy in the per-user config directory
-# (lcsc_suite/config.py) and imports this one once, via shared.LEGACY_ROOT.
+# The wx plugin wrote settings.json into its own package directory. The package
+# went with the Phase 8 cutover but a user's file did not, and
+# config.LEGACY_SETTINGS_PATHS still imports it once so nobody sets their
+# preferences twice. Ignored so that leftover does not show up as untracked in
+# every checkout that predates the cutover; deleting it is safe once the app has
+# run once, because the import writes to the per-user config directory.
 /kicad_lcsc_suite/settings.json
 /lcsc_suite/jlcpcb/
+
+# Build output from PCM/create_pcm_archive.sh: the staging tree and the zip. The
+# staging tree is a *copy of every module*, so leaving it unignored means the
+# next `ruff check --extend-exclude=lib` lints the copy too — where the vendored
+# lib/ sits at a path the exclusion does not match, and 21 errors appear in files
+# nobody edited. ruff honours this file, so ignoring it is the fix.
+/PCM/archive/
+/PCM/*.zip
 
 # Lib-table backups this plugin writes before editing a KiCad table
 *.lcsc-suite.bak
