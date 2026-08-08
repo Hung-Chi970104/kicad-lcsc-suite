@@ -98,11 +98,14 @@ to all of LCSC. Narrow the keyword to pull a different slice.
 
 | | Supported | Notes |
 |---|---|---|
-| **OS** | macOS, Windows, Linux | installer handles all three |
-| **KiCad** | 7, 8, 9, 10 | only `GetBoard().GetFileName()` is used from the `pcbnew` API |
-| **Python** | 3.9 – 3.14 | 3.9 is the floor KiCad bundles; verified on 3.9.6, 3.9.13 and 3.14.5 |
-| **wxPython** | 4.1+ | previews need `wx.svg`; without it everything else still works |
-| **Dependencies** | none to install | uses `wx` + stdlib, `certifi` if present, and the vendored zero-dependency easyeda2kicad |
+| **OS** | macOS, Windows, Linux | installer handles all three; layout verified identical on macOS and Windows by CI |
+| **KiCad** | **10.0+** | the UI runs out of process over the IPC API, which does not exist before KiCad 10 |
+| **Python** | 3.12+ | its own virtualenv, not KiCad's bundled interpreter |
+| **Qt** | PySide6 6.7+ | Fusion style, forced, so both platforms render the same |
+| **Dependencies** | installed once, by `install.sh` | `PySide6` and `kicad-python`, plus the vendored zero-dependency easyeda2kicad |
+
+KiCad's **API server must be enabled**: Preferences → Plugins → Enable KiCad
+API. `install.sh` checks it and says so if it is off.
 
 Deliberate portability choices:
 
@@ -115,22 +118,26 @@ Deliberate portability choices:
   bundles. Verification is never disabled; if no trust anchors exist, requests
   fail loudly. (KiCad's macOS Python has no system trust store, which is why
   this chain exists.)
-- **Annotations** use `Optional[X]`, not `X | None`, per upstream's
-  `CLAUDE.md`. `UP035`/`UP045` are pinned off in `pyproject.toml` so ruff
-  cannot rewrite them into 3.10-only syntax.
+- **The style is forced to Fusion** and the font size stated explicitly, so a
+  screenshot taken on one platform is evidence about the other. CI renders every
+  screen on `windows-latest` and compares the layout against the committed macOS
+  reference — see `scripts/compare_geometry.py`.
 
 ### Verifying an install
 
-`./install.sh --list` reports where each half is linked and whether the target
-is ours. To check the wx plugin imports under **the same interpreter KiCad
-uses**:
+`./install.sh --list` reports where the plugin is linked, whether the target is
+ours, and which Python and PySide6 the virtualenv has. To check the app starts
+at all without KiCad running:
 
 ```bash
-# macOS
-/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 \
-  -c "import kicad_lcsc_suite.lcsc.api as a; print('ok', a.__file__)"
-# Windows
-& "C:\Program Files\KiCad\10.0\bin\python.exe" -c "import kicad_lcsc_suite.lcsc.api; print('ok')"
+.venv/bin/python -m lcsc_suite --fixture
+```
+
+If the toolbar button does nothing, the launcher's log is the only place a
+start-up traceback appears — KiCad discards both streams:
+
+```bash
+cat ~/.local/state/lcsc-suite/plugin.log
 ```
 
 If stock columns read `?`, the cause is almost always TLS trust or a blocked
@@ -175,15 +182,17 @@ If PowerShell blocks the script, allow it for that session only:
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-The installer locates KiCad's plugin directory itself
-(`~/Documents/KiCad/<ver>/scripting/plugins` on macOS and Windows,
-`$XDG_DATA_HOME/kicad/<ver>/scripting/plugins` on Linux) and links this
-checkout in as `kicad_lcsc_suite`. Because it links rather than copies,
-**`git pull` updates the installed plugin on every machine — no reinstall.**
+The installer builds a virtualenv, pip-installs `PySide6` and `kicad-python`
+into it, locates KiCad's plugin directory itself
+(`~/Documents/KiCad/<ver>/plugins` on macOS and Windows,
+`$XDG_DATA_HOME/kicad/<ver>/plugins` on Linux) and links `kicad_plugin/` in as
+`lcsc_suite`. Because it links rather than copies, **`git pull` updates the
+installed plugin on every machine — no reinstall.** It also checks that KiCad's
+API server is enabled and tells you how to turn it on if not.
 
 ### 3. Restart KiCad
 
-Then: **PCB editor → Tools → External Plugins → LCSC Suite**.
+Then: **PCB editor → the "LCSC Suite" toolbar button.**
 
 Named "LCSC Suite" so it can sit alongside an upstream "JLCPCB Tools"
 install without producing two identical toolbar entries.
@@ -191,15 +200,15 @@ install without producing two identical toolbar entries.
 ### 4. Confirm it works (optional)
 
 ```bash
-./install.sh --list     # where each half is linked, and whether it is ours
+./install.sh --list     # where it is linked, and which Python the venv has
 ```
 
 ### Manual install (no git)
 
-Copy the **`kicad_lcsc_suite/` directory** (not the repository root) into
-KiCad's `scripting/plugins` folder, keeping its name, then restart KiCad. The
-name has to stay a valid Python identifier — underscores, not hyphens — because
-it is what KiCad imports the package as.
+There is no copy-a-directory install any more: the app needs an interpreter with
+PySide6 in it, and that is what `install.sh` exists to build. A PCM package that
+carries its own frozen runtime is the plan — the metadata already declares
+`"runtime": "ipc"` — and `PCM/create_pcm_archive.sh` says what is still missing.
 
 ### Troubleshooting
 
@@ -308,31 +317,31 @@ imported library does not show up in the symbol chooser.
 
 ## Layout
 
-The UI is being rewritten out-of-process in PySide6 (see
-[docs/QT_MIGRATION_PLAN.md](docs/QT_MIGRATION_PLAN.md)), so there are two
-application packages side by side. They do not collide — each is a separate
-entry point, and `./install.sh --list` shows both.
+One application package. The wx plugin that used to sit beside it was removed
+at the Phase 8 cutover; see
+[docs/QT_MIGRATION_PLAN.md](docs/QT_MIGRATION_PLAN.md).
 
 ```text
-kicad_lcsc_suite/      the wx plugin KiCad loads, on its bundled Python 3.9
+lcsc_suite/            the PySide6 app, own venv, Python 3.12+
+  kicad_bridge.py        the KiCad 10 IPC API, with its four traps wrapped
+  controller.py          what every button does; the only thing that writes
+  ui/                    Qt widgets, Fusion style; ui/theme.py owns every colour
+  shared.py              names the toolkit-free logic layer below
   lcsc/api.py            JLC assembly + LCSC retail + JLC search; StockReport
   lcsc/importer.py       EasyEDA -> KiCad library; lib-table registration
-  lcsc/explorer.py       the LCSC Explorer dialog
-  lcsc/previewpanel.py   symbol/footprint (wx.svg) and photo preview tiles
-  lcsc/theme.py          light/dark aware status and inventory colours
-  store.py library.py    the SQLite layers, shared with the Qt app
-  icons/                 the icon set, shared with the Qt app
+  store.py library.py    the SQLite layers
+  fab_rules.py           the BOM/CPL rules: corrections, rotation, grouping
+  icons/                 the icon set, recoloured for dark mode at runtime
   lib/easyeda2kicad/     vendored, zero-dependency converter
+  fixtures/              a 110-footprint board and one captured search
 
-lcsc_suite/            the new PySide6 app, own venv, Python 3.12+
-  kicad_bridge.py        the KiCad 10 IPC API, with its traps wrapped
-  shared.py              the only sanctioned way in to the modules above
-  ui/                    Qt widgets, Fusion style
-
-kicad_plugin/          IPC manifest + launcher for the Qt app
+kicad_plugin/          IPC manifest + launcher KiCad reads
 db_build/              the parts-database GitHub Action, and its common/ library
-scripts/               gui_probe.py (wx) and qt_probe.py (Qt) screenshot harnesses
-tests/                 every test, for both halves
+scripts/               qt_probe.py (screens), compare_geometry.py (the Windows
+                       gate), live_ipc_check.py (board writes)
+tests/                 every test
+docs/screens/          committed PNGs; wx/ holds the six parity captures of the
+                       plugin that was replaced
 install.sh / .ps1      symlink/junction installer
 UPSTREAM.txt           pinned upstream commits
 ```
@@ -347,9 +356,9 @@ This repository combines two upstreams under **different** licenses:
 
 | Component | Upstream | License |
 |---|---|---|
-| Plugin base (`kicad_lcsc_suite/mainwindow.py`, `fabrication.py`, `store.py`, …) | [Bouni/kicad-jlcpcb-tools][bouni] | MIT (`LICENSE`) |
-| `kicad_lcsc_suite/lib/easyeda2kicad/` (vendored) | [uPesy/easyeda2kicad.py][e2k] | **AGPL-3.0** (its own `LICENSE`) |
-| `kicad_lcsc_suite/lcsc/`, `lcsc_suite/`, installers | this repo | see below |
+| Plugin base (`lcsc_suite/store.py`, `library.py`, `fab_rules.py`, …) | [Bouni/kicad-jlcpcb-tools][bouni] | MIT (`LICENSE`) |
+| `lcsc_suite/lib/easyeda2kicad/` (vendored) | [uPesy/easyeda2kicad.py][e2k] | **AGPL-3.0** (its own `LICENSE`) |
+| `lcsc_suite/lcsc/`, `lcsc_suite/ui/`, installers | this repo | see below |
 
 The AGPL is the binding constraint. **While this repository stays private
 and you only run the plugin yourself, nothing is triggered** — the AGPL's
@@ -362,7 +371,7 @@ complete corresponding source. Two ways to stay clean:
 
 1. **Relicense the whole thing AGPL-3.0** — simplest, and compatible, since
    MIT code can be included in an AGPL work.
-2. **Un-vendor easyeda2kicad** — drop `kicad_lcsc_suite/lib/easyeda2kicad/`,
+2. **Un-vendor easyeda2kicad** — drop `lcsc_suite/lib/easyeda2kicad/`,
    make it a pip dependency the user installs, and keep this repo MIT. Removes
    the "no dependencies to install" property.
 

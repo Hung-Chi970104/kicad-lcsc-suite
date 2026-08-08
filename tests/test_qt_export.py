@@ -28,8 +28,6 @@ from __future__ import annotations
 import csv
 import os
 from pathlib import Path
-import sys
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -190,55 +188,21 @@ def test_a_bottom_side_offset_is_mirrored_in_x():
 
 
 # ---------------------------------------------------------------------------
-# The seam — both halves run the same code
-# ---------------------------------------------------------------------------
-
-
-def test_the_wx_plugin_delegates_to_the_shared_rules():
-    """``fabrication`` must not carry a second copy of any of this.
-
-    Two ports of one spec drift; one function called twice cannot. This is the
-    property that makes the live byte-comparison meaningful rather than lucky.
-    """
-    for name in ("pcbnew", "wx", "wx.dataview"):
-        sys.modules.setdefault(name, MagicMock())
-    from kicad_lcsc_suite import fabrication  # noqa: PLC0415 - after the stub
-
-    assert fabrication.split_bom_designators is fab_rules.split_bom_designators
-    source = Path(fabrication.__file__).read_text(encoding="utf-8")
-    for gone in ("math.cos", "math.radians", "% 360", "re.search"):
-        assert gone not in source, f"{gone!r} is back in fabrication.py"
-
-
-def test_the_wx_rotation_wrapper_produces_the_shared_answer():
-    """``Fabrication.fix_rotation`` reads pcbnew and defers for the arithmetic."""
-    for name in ("pcbnew", "wx", "wx.dataview"):
-        sys.modules.setdefault(name, MagicMock())
-    from kicad_lcsc_suite.fabrication import Fabrication  # noqa: PLC0415 - ditto
-
-    class _Fp:
-        def GetReference(self):  # noqa: N802 - pcbnew's spelling
-            return "U2"
-
-        def GetValue(self):  # noqa: N802
-            return "MAX1968"
-
-        def GetFPID(self):  # noqa: N802
-            return type("_Id", (), {"GetLibItemName": lambda _self: "HTSSOP-28"})()
-
-        def GetLayer(self):  # noqa: N802
-            return 0
-
-        def GetOrientation(self):  # noqa: N802
-            return type("_Angle", (), {"AsDegrees": lambda _self: 90.0})()
-
-    fab = object.__new__(Fabrication)
-    fab.corrections = [("HTSSOP-28", 270, (0.0, 0.0))]
-    fab.logger = MagicMock()
-    names = ("U2", "MAX1968", "HTSSOP-28")
-    assert fab.fix_rotation(_Fp()) == fab_rules.corrected_rotation(
-        90.0, False, names, fab.corrections
-    )
+# The seam — there is only one copy now
+#
+# Phase 6 split these rules out of fabrication.py so the wx plugin and this app
+# ran the same functions rather than two ports of one spec, and two tests here
+# pinned it: fabrication.split_bom_designators had to *be* fab_rules', and
+# fabrication.py had to contain no math.cos, no % 360 and no re.search of its
+# own. Phase 8 deleted fabrication.py, so what they defended is true by
+# construction — there is nothing left to drift from, and they have gone.
+#
+# What they were really protecting is the live byte-comparison in the plan's
+# §10: the CPL this writes was the CPL the wx plugin wrote, to the byte, on a
+# real 110-footprint board. That evidence is historical now and cannot be
+# re-run — which is why the three things it caught are asserted directly above
+# instead: from_mm truncating, box_center flooring, and an uncorrected angle
+# keeping its sign.
 
 
 # ---------------------------------------------------------------------------

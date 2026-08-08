@@ -11,9 +11,9 @@ things there have to be exactly right or the estimate is silently wrong:
 Both are stdlib-only, so they run without wx or KiCad.
 """
 
-from kicad_lcsc_suite import derive_params
-from kicad_lcsc_suite.bom_estimation import pricing
-from kicad_lcsc_suite.lcsc import api, details
+from lcsc_suite import derive_params
+from lcsc_suite.bom_estimation import pricing
+from lcsc_suite.lcsc import api, details
 
 
 def _hit(**overrides):

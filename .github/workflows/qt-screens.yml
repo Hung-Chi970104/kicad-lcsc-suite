@@ -19,9 +19,6 @@ on:
   push:
     paths:
       - "lcsc_suite/**"
-      # The Qt app reads the icon set and the shared logic modules out of the
-      # legacy package, so a change there can alter what renders.
-      - "kicad_lcsc_suite/**"
       - "scripts/qt_probe.py"
       # The cross-platform gate itself. Left out at first, so the commit that
       # rewrote it did not run it — a gate that does not run on changes to the

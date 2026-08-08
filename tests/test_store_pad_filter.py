@@ -14,14 +14,14 @@ if "wx" not in sys.modules:
 if "wx.dataview" not in sys.modules:
     sys.modules["wx.dataview"] = types.ModuleType("wx.dataview")
 
-from kicad_lcsc_suite import (  # noqa: E402
+from lcsc_suite import (  # noqa: E402
     footprint_metadata as footprint_metadata_module,
     store as store_module,  # noqa: E402
 )
-from kicad_lcsc_suite.bom_estimation.pricing import (  # noqa: E402
+from lcsc_suite.bom_estimation.pricing import (  # noqa: E402
     get_assembly_flags as parse_assembly_flags,
 )
-from kicad_lcsc_suite.footprint_metadata import (  # noqa: E402
+from lcsc_suite.footprint_metadata import (  # noqa: E402
     count_pad,
     footprint_has_tht,
     get_footprint_pad_count,

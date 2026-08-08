@@ -3,6 +3,14 @@
 Moving kicad-lcsc-suite from an in-process wxPython plugin to an
 out-of-process PySide6 application driven over KiCad 10's IPC API.
 
+> **Status: complete.** Phases 0–8 are done; the wx plugin was deleted at the
+> Phase 8 cutover. §§1–9 are kept as written, because they are the reasoning the
+> work was done against and several of them were **wrong in ways worth
+> preserving** — §5.2's Inventory selector, §5.4's column count, §6's claim that
+> the BOM writers were pure logic, and §7's "non-zero diff is a bug". §10 is the
+> record of what actually happened and is the only section to trust on the
+> current state of the code.
+
 Companion to [ARCHITECTURE.md](ARCHITECTURE.md) (how the current system fits
 together) and [DEVELOPMENT.md](DEVELOPMENT.md) (setup and tests).
 
@@ -119,6 +127,7 @@ plan was written, not assumed:
 | Exclude-from-BOM / exclude-from-POS / DNP attributes | ✅ plain booleans |
 | Qt offscreen render → self-screenshot | ✅ no display needed |
 | Footprint position + rotation (for CPL) | ✅ exercised in Phase 6, byte-identical output |
+| Identical layout on Windows and macOS | ✅ Phase 8, and a CI job rather than a claim |
 
 ### Four traps — read before writing code
 
@@ -1736,27 +1745,219 @@ entry points drifted. Two things came out of doing it that way:
 - **Windows verification still not run**, for any phase.
 - **`live_ipc_check.py` was not re-run.** No write path through the bridge
   changed; the schematic is a file, not the board.
+### Phase 8 — the parity gate, then the cutover ✅
 
-### Resume here → Phase 8
+The migration is done. The wx plugin is deleted, its surviving logic lives in
+`lcsc_suite/`, and the claim the whole thing rests on has evidence behind it for
+the first time.
 
-Read this whole §10, then `git log --oneline` for the phase commits. Every screen
-in `docs/screens/` is current, and **Phases 0–7 are done**.
+Tests: 811 → **770**, which is the only number in this document that went down.
+39 of them tested wx UI that no longer exists (`bom_widget`'s controller, the
+`datamodel` stock column, `mainwindow`'s detail refresh, `search_escape` — dead
+code with no callers since upstream's part selector was replaced — and
+`enrichment/providers`, which the Qt estimator deliberately never used). Two
+more asserted that `fabrication.py` had not grown its own copy of the shared
+rules, which is true by construction now that there is no `fabrication.py`. The
+other 30 were **retargeted, not deleted**: `test_fabrication_corrections`
+(15) calls `fab_rules.find_correction` where it called
+`Fabrication._find_correction`, and `test_bom_designator_split` (15) calls
+`fab_rules.bom_rows` where it drove `generate_bom` through a fake board and a
+fake store. Every test body is the one written against the wx plugin.
 
-**Phase 8 is the parity gate, then the cutover** (§6):
+#### Windows verification: run, and it is a job now
 
-- side-by-side screenshot review of every screen against the wx original;
-- the same board through both versions — the BOM and CPL byte-comparison is
-  already done and recorded above, so what remains is the rest of the screens;
-- **Windows verification**, which has never been run and is the one claim this
-  migration rests on that has no evidence behind it yet (§7);
-- only then remove the wx plugin and the `install.sh` symlink path.
+§7 asked for "one real Windows pass per phase" and it was never once run. Doing
+it by hand is what made it never happen, so it is CI — a `windows-latest` job
+that renders all 38 screens and compares them against a committed macOS
+reference (`docs/screens/geometry.txt`, 3114 lines).
 
-Nothing in Phases 0–7 is waiting on anything. The unfinished items are the three
-"known limitations" lists in this §10 — none of them blocks the gate, and all of
-them should be read before the wx plugin is deleted, because deleting it is what
-makes them permanent.
+**RESULT: PASS — 0 structural problems, 0 collapsed widgets**, and every screen
+that states its own size is exactly that size on both platforms.
 
-House rules that have been followed so far and should keep being followed:
+The gate is not the one §7 imagined. It says "diff the PNGs against the macOS
+set. Non-zero diff is a bug", and the first run with working fonts shows why
+that cannot stand: **2132 widgets differ in size and 1274 in position**, and the
+largest of both are the spacers doing their job — the main toolbar's spacer is
+233px on macOS and 277px on Windows *because* the buttons either side of it are
+narrower in Segoe UI. The app forces Fusion and states a font *size*, but not a
+font *family*. So `scripts/compare_geometry.py` grades what a font cannot
+change:
+
+- **structure** — every widget, its nesting, its text, its hidden flag. This is
+  what catches the failure that matters: a label the platform had to elide
+  changes its *text*, and a toolbar that overflows *shows its extension arrow*.
+  Both verified against simulated regressions;
+- **stated window sizes** — exact. The two dialogs that size themselves to their
+  contents get a budget; measured, they differ by 37px and 7px;
+- **collapse** — a widget with a size on one platform and none on the other.
+
+No pixel budget on anything else. A budget on a number that legitimately differs
+is a number somebody raises until it stops complaining.
+
+**The first Windows render had no fonts at all** — every glyph a missing-glyph
+box. Qt's offscreen platform reaches the system font database on Linux and
+macOS; on Windows it falls back to a basic database that reads a *directory*,
+and with none set it finds nothing. That is not cosmetic: tofu has its own
+metrics, and the run came back reporting the extension arrow visible, which
+reads exactly like the real bug. `build_application()` sets `QT_QPA_FONTDIR`
+when it turns the offscreen platform on, so anyone running the probe on Windows
+gets text.
+
+#### CI had never once passed
+
+Found while setting the above up: the workflow had run **twice in the project's
+history and failed both times**. `render` and `windows` died on `requests`,
+`test` on `cachetools` — every job hand-listed its dependencies and every list
+had drifted from what the code imports. They install `-e .` now, so the list
+cannot drift again because it is not written twice. `scripts/compare_geometry.py`
+was also missing from the path filter, so the commit that rewrote the gate did
+not run it.
+
+The screenshot gate the migration's verification story rests on was, for six
+phases, not a gate.
+
+#### Two real bugs found making the reference reproducible
+
+- **`export-summary` was nondeterministic, so the size check was a coin flip.**
+  The report spelled out an absolute path and `QMessageBox` sizes itself to its
+  informative text — the committed PNG is 408px and re-rendering gave 411px. It
+  reports the last three components now (`…/tempctrl/jlcpcb/production_files`),
+  which is the whole answer since the export always lands in the same two
+  directories under the project; the absolute path moved to the details pane,
+  where it is selectable. A deeply-nested project no longer widens the dialog,
+  and a Windows path no longer widens it further.
+- **The probe leaked its own tempdir name into that screen.** `mkdtemp`'s suffix
+  is a fixed number of *characters* in a proportional font, so three consecutive
+  runs rendered 354px, 346px and 353px.
+
+#### The parity gate had no originals
+
+§5 says the UI inventory was "captured from the running plugin", but **no wx
+screenshot was ever committed** — so "side-by-side review against the wx
+original" had nothing to review against. `gui_probe.py` grew `--shot`
+(`wx.WindowDC` reads the window's own surface, so no Screen Recording
+permission) and captured six under KiCad's own Python 3.9 / wxWidgets 3.2.8.
+They are in **`docs/screens/wx/`** and they do not re-render — nothing can
+produce them any more.
+
+Reviewed side by side, structure holds on every screen: both toolbars, all nine
+table columns in order, all ten right-hand buttons, the Explorer's search row,
+filter row, facet panel, grid columns and seven action buttons, and every
+Settings item that §5.3 says survives. Two wx defects showed up in the
+comparison that Qt does not have:
+
+- the corrections table elides its own `Offset Y` header to **`Off…t Y`**;
+- `Toggle BOM & POS` renders as `Toggle BOM  POS`, wx having eaten the
+  ampersand as a mnemonic.
+
+The wx capture also **confirms Phase 5's correction to §5.4**: the corrections
+table has four columns, not the five §5.4 lists. `Regex` and `Pattern` are one
+column written down twice.
+
+#### PCM: answered yes, and then answered properly
+
+The open question was whether PCM can ship an IPC-runtime plugin. **It can.**
+The v1 schema has `"runtime": {"enum": ["swig", "ipc"]}` on a package version
+and a `platforms` array of `windows`/`macos`/`linux`; KiCad's own add-on docs
+say the same. `PCM/metadata.template.json` sets `runtime: ipc`, takes the
+`com.lcscsuite.plugin` identifier, drops upstream's author block and raises
+`kicad_version` to 10.0.
+
+**But that does not make PCM a working install path yet**, and the archive
+script now says so at the top rather than implying otherwise. PCM unpacks files;
+it does not build a virtualenv, and this app needs an interpreter with PySide6
+in it. The PyInstaller freeze §8 already schedules for "before any public
+release" is what closes that — `platforms` is how the three builds get
+published, and because `runtime.type` is `exec` the swap touches only
+`run.sh`. Until then `install.sh` is the supported path.
+
+#### The cutover, and the bug it forced
+
+`library.py` derived its default data directory from **its own file location**
+(`<module dir>/jlcpcb`). Moving the module would therefore silently redefine
+where the user's databases are — and it had already done that once: the
+reorganisation between Phases 2 and 3 orphaned the 750MB parts database sitting
+in the old root, which is why the Offline DB looks empty on this machine while
+the file is still on disk.
+
+So the default moved out of the package entirely, to a per-user data directory —
+the same reasoning that moved `settings.json` in Phase 0, and the same reasoning
+a read-only frozen install will need. `config.adopt_data_directory` points an
+unconfigured install at data it already has and **writes the answer to
+settings**, so it stops depending on where any module lives. It adopts rather
+than moves: the candidates hold up to 750MB, a half-finished copy of which is
+worse than no copy, and the user's files are not a migration's to relocate.
+
+What moved, what died:
+
+| | |
+|---|---|
+| Promoted to `lcsc_suite/` | `store`, `library`, `schematicexport`, `schematicimport`, `derive_params`, `highlight_terms`, `fab_rules`, `events`, `sqlite_helpers`, `unzip_parts`, `footprint_helpers`, `footprint_metadata`, `core/`, `dblib/`, `bom_estimation/`, `lcsc/{api,details,importer}`, `lib/`, `icons/`, `VERSION` |
+| Deleted | `mainwindow`, `plugin`, `settings`, `corrections`, `partmapper`, `partdetails`, `datamodel`, `dataview_highlight`, `bom_widget`, `helpers`, `standalone_impl`, `search_escape`, `partselector_columns`, `kicad_drc`, `generate_hooks`, `fabrication`, `enrichment/`, `lcsc/{explorer,photoviewer,previewpanel,facetfilter,theme}`, `scripts/gui_probe.py`, `docs/HOOKS.md` |
+
+`shared.py` survives as a plain aggregator. Its `importlib` machinery and
+`LEGACY_ROOT` are gone, but it still names what the toolkit-free logic layer
+*is*, which is the boundary the directory used to draw.
+
+Three consequences worth knowing:
+
+- **`ruff format --check` is now clean.** CLAUDE.md carried a standing caveat
+  about four upstream files that "would be reformatted — leave them alone".
+  All four (`corrections.py`, `events.py`, `kicad_drc.py`, `partdetails.py`)
+  went with the plugin.
+- **The Python 3.9 rule is gone**, along with "no runtime dependencies". Both
+  were consequences of KiCad's bundled interpreter, which nothing here runs in.
+  `pyproject.toml` still pins `UP006/UP007/UP035/UP045` off; re-enabling them is
+  a deliberate separate change.
+- **`events.py` lost its wx branch** and is a plain progress-event module. It
+  keeps the `EVT_` constants: nothing binds them, but they are what `post()`'s
+  destination switches on.
+
+The cutover changed nothing visible — geometry byte-identical across all 38
+screens, and a pixel diff maxing at 0.13% (the log pane's timestamps). That
+check was not optional: Phase 2 records that a broken icon path is **invisible
+to geometry** and shows up only as 49% of pixels differing.
+
+#### Known limitations, stated rather than skipped
+
+- **PCM cannot install this yet.** Answered above; it needs the freeze.
+- **`docs/screens/wx/` cannot be regenerated.** That is the point of committing
+  it, but it also means the parity comparison is a one-time artifact — there is
+  no wx plugin left to re-render if a question about it comes up later.
+- **The live BOM/CPL byte-comparison is historical.** It ran against the real
+  `Fabrication` on a 110-footprint board and cannot run again. The three pieces
+  of pcbnew arithmetic it caught — `from_mm` truncating, `box_center` flooring,
+  an uncorrected angle keeping its sign — are asserted directly in
+  `test_qt_export.py` instead.
+- **`live_ipc_check.py` was not re-run.** `kicad_bridge.py` is untouched by this
+  phase. Re-run it whenever a write path changes.
+- **The `Missing prices N` gap is still only in the estimate line**, not the BOM
+  writer. Carried from Phase 6; it is a feature, and parity came first.
+- **Library import still bypasses the offline guarantee.** `LcscImporter` uses
+  the vendored `easyeda2kicad` transport. Nothing reaches the wire today because
+  no test or probe clicks Import; route it through `search_source` if one ever
+  does.
+
+### Resume here → Phase 9
+
+**Phases 0–8 are done.** There is one application, one interpreter, one test
+suite, and CI is green on Linux and Windows. Read this whole §10 first, then
+`git log --oneline`.
+
+There is no Phase 9 in this plan, because this plan ends at parity. What comes
+next is the first work in two years that is allowed to be a *feature*, and the
+list it should be chosen from is the "known limitations" above plus the two
+things the migration deferred by name:
+
+1. **The PyInstaller freeze**, which is what turns PCM from "the schema allows
+   it" into an install path a user can actually use. §8 scheduled it for before
+   any public release, and it is now the only thing between this and one.
+2. **`Missing prices N` in the BOM writer**, the one genuine feature the port
+   set aside.
+
+Everything else in this document is history. The house rules below are not.
+
+House rules that have been followed throughout and should keep being followed:
 
 - **Never claim a UI change works without looking at the PNG.**
   `.venv/bin/python scripts/qt_probe.py --all --theme both` and then actually
@@ -1764,31 +1965,26 @@ House rules that have been followed so far and should keep being followed:
   PNGs in the same commit as the UI change. Phase 4 found two real bugs this way
   that no test caught, and one that only a test caught — the two instruments do
   not overlap.
+- **A fixture is only evidence to the extent it is *less* permissive than the
+  thing it stands in for.** Trap 4 survived two phases of green tests because
+  `FixtureBoard` was more permissive in exactly one respect, and that respect was
+  where the bug was.
 - `scripts/qt_probe.py --list` names every screen; add a `screen_*` builder plus
   an entry in `SCREENS` and CI covers it automatically. Give each screen fresh
-  `probe_settings()` — the main window saves its geometry on close and the next
-  screen would restore it.
+  `probe_settings()`.
 - **The probe and the tests must never touch the wire.** `search_source.
   build_source()` defaults to live; the probe and the tests pass a
-  `FixtureSource`. Same shape as `Library(allow_network=False)` from Phase 2.
-- `lcsc_suite/shared.py` is the only sanctioned way to import
-  `kicad_lcsc_suite`'s logic modules, and `shared.LEGACY_ROOT` the only way to
-  reach its *data* (`icons/`, the wx `settings.json`). No `sys.path` hacks.
+  `FixtureSource`. Same shape as `Library(allow_network=False)`.
 - `lcsc/api.py` is **copied, not edited**. If a UI need seems to require an API
   change, change the UI — Phase 4 did exactly that three times.
-- The board fixture (`lcsc_suite/fixtures/board.json`) has 110 footprints, 93
-  assigned, 8 excluded from both BOM and POS, and `R12` marked DNP.
-  `FixtureBoard(honour_footprint_writes=False)` reproduces trap 2 and staged
-  `_pending` writes reproduce trap 4.
-- Run `.venv/bin/python -m pytest -q` at every phase boundary. 436 at the start of
-  the migration, 671 now. Every file must also pass **on its own**:
+- Run `.venv/bin/python -m pytest -q` at every boundary. Every file must also
+  pass **on its own**:
   `for f in tests/test_*.py; do .venv/bin/python -m pytest -q "$f" >/dev/null || echo "FAILS ALONE: $f"; done`
-- `ruff check --extend-exclude=lib` must pass. `ruff format --check` still reports
-  the same four **untouched upstream** files (`corrections.py`, `events.py`,
-  `kicad_drc.py`, `partdetails.py`) — leave them alone, as CLAUDE.md says.
+- `ruff check --extend-exclude=lib` and `ruff format --check --exclude lib` must
+  **both** pass clean. The four-file exception is gone.
 - **Re-run `scripts/live_ipc_check.py` whenever `kicad_bridge` is touched.** It
-  needs KiCad open with a **copy** of a board and refuses a project path that does
-  not look disposable:
+  needs KiCad open with a **copy** of a board and refuses a project path that
+  does not look disposable:
 
   ```bash
   mkdir -p /tmp/lcsc-live
@@ -1798,26 +1994,23 @@ House rules that have been followed so far and should keep being followed:
   ```
 
   Close the board **without saving** afterwards.
-- **Do not re-run `scripts/capture_explorer_fixture.py`** unless the payload shape
-  has actually changed. It spends live requests against hosts that rate-limit and
-  geo-block, and the fixture it writes is already committed.
-- The legacy wx plugin stays installed and working until Phase 8.
-  `./install.sh --list` shows both halves.
+- **Do not re-run `scripts/capture_explorer_fixture.py`** unless the payload
+  shape has actually changed. It spends live requests against hosts that
+  rate-limit and geo-block, and the fixture it writes is already committed.
 
 Environment notes worth knowing:
 
-- `./install.sh --app` has been run; the IPC plugin is symlinked at
+- `./install.sh` has been run; the plugin is symlinked at
   `~/Documents/KiCad/10.0/plugins/lcsc_suite` → `kicad_plugin/`, and the venv is
   `.venv` (Python 3.14.5, PySide6 6.11.1, kicad-python).
 - KiCad's API server is enabled. The launcher's log goes to
-  `~/.local/state/lcsc-suite/plugin.log` — the only place a start-up traceback can
-  be read, because KiCad discards both streams.
+  `~/.local/state/lcsc-suite/plugin.log` — the only place a start-up traceback
+  can be read, because KiCad discards both streams.
 - Settings live at
-  `~/Library/Preferences/kicad-lcsc-suite/LCSC Suite/settings.json`.
+  `~/Library/Preferences/kicad-lcsc-suite/LCSC Suite/settings.json`. The
+  database directory is now a setting too, adopted once on first run.
 - The offscreen platform's virtual screen is **800x800**. `resize()` ignores it
-  (so screenshots come out at their stated size) but `restoreGeometry()` clamps to
-  it, which is why the geometry test asserts height only.
+  (so screenshots come out at their stated size) but `restoreGeometry()` clamps
+  to it, which is why the geometry test asserts height only.
 - Reachability changes by the day. One line to check before blaming the UI:
   `curl -o /dev/null -w '%{http_code}\n' 'https://wmsc.lcsc.com/ftps/wm/product/detail?productCode=C1592'`
-  It answered 200 for the Phase 4 capture, which the standing note says is the
-  exception rather than the rule.

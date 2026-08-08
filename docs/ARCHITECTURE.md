@@ -8,73 +8,90 @@ test it).
 
 ## 1. The shape of the thing
 
-This is a **KiCad plugin**, described here as it stands today: an in-process wx
-action plugin, alongside the out-of-process PySide6 app that is replacing it
-(see [QT_MIGRATION_PLAN.md](QT_MIGRATION_PLAN.md)). There is no server, no build
-artifact and no installed copy — `install.sh` symlinks the two package
-directories into KiCad's plugin directories, so the working tree *is* what runs.
+This is a **KiCad 10 plugin** whose UI runs **out of process**. There is no
+server and no build artifact — `install.sh` builds a virtualenv and symlinks
+`kicad_plugin/` into KiCad's plugin directory, so the working tree *is* what
+runs.
 
 ```text
-KiCad (pcbnew)
-  └── imports kicad_lcsc_suite/__init__.py     -> adds lib/ to sys.path
-        └── plugin.JLCPCBPlugin.register()      -> toolbar button "LCSC Suite"
-              └── Run() -> mainwindow.JLCPCBTools(None)   [the whole wx UI]
+KiCad 10 (pcbnew)                        LCSC Suite (separate process)
+│                                         │
+├─ reads plugins/lcsc_suite/plugin.json   │
+│    └─ toolbar button "LCSC Suite"       │
+│                                         │
+├─ on click: exec run.sh ───────────────► launcher clears PYTHONHOME,
+│    env: KICAD_API_SOCKET                │  runs the venv's python -m lcsc_suite
+│         KICAD_API_TOKEN                 │
+│                                         ├─ PySide6 UI (Fusion style)
+└─◄──── IPC API (kipy) ──────────────────┤─ lcsc/ network layer
+     board, footprints, fields, commits   ├─ SQLite stores
+                                          └─ BOM / CPL writers
 ```
 
-Registration is guarded on a **real** `pcbnew` being importable, because the
-same package is imported for its logic modules by the Qt app and by the tests,
-and neither should pull in the wx dialog tree to reach `store.py`.
+`runtime.type: "exec"` is the key: KiCad launches **any executable**, so the app
+brings its own Python and KiCad does not care which. That also means swapping
+the venv for a frozen binary later is a change to one shell script.
 
-`Run()` fires on **every** toolbar click, so it first looks for a window that
-is already up (`find_open_main_window`, matched on the dialog's wx name) and
-raises that instead. Two instances would open the same project database and
-the same board and quietly overwrite each other. The lookup goes through
-`wx.GetTopLevelWindows()` rather than a module-level reference so that
-KiCad's "Refresh Plugins", which re-imports this package, cannot orphan the
-window it is trying to find.
+KiCad reruns the launcher on **every** toolbar click, so there is no window for
+a second invocation to find. [`single_instance.py`](../lcsc_suite/single_instance.py)
+is a `QLocalServer` whose *binding* is the lock and which doubles as the "come
+forward" channel. It is scoped **per board**: two windows on one board would
+share a project database and quietly overwrite each other.
 
-`JLCPCBTools` is a single `wx.Dialog` that owns everything:
+The object graph is deliberately flatter than the dialog it replaced:
 
 ```text
-JLCPCBTools (mainwindow.py, ~2100 lines)
-├── self.pcbnew        KicadProvider -> real pcbnew, or standalone_impl.KicadStub
-├── self.settings      dict loaded from PLUGIN_PATH/settings.json
-├── self.library       Library      — the downloaded JLCPCB parts database
-├── self.store         Store        — per-project SQLite state for this board
-├── self.fabrication   Fabrication  — Gerber/Excellon/BOM/CPL writer
-├── self.partlist_data_model   PartListDataModel (datamodel.py)
-├── self.bom_estimator         BomEstimatorWidget/Controller (bom_widget.py)
-└── self._part_selector        LcscExplorerDialog singleton (lcsc/explorer.py)
+SuiteController (controller.py)   — decides and writes
+├── board       kicad_bridge._Board  — the only thing that touches KiCad
+├── parts       PartList             — board <-> project DB <-> displayed rows
+│     ├── store    Store             — per-project SQLite state for this board
+│     └── library  Library           — parts DB, part cache, corrections, mappings
+├── settings    Settings             — per-user config directory
+├── undo        UndoStack            — reaches the database, which KiCad's cannot
+├── estimator   BomEstimator
+├── explorer    ExplorerWindow       — one, re-targeted
+└── window      MainWindow           — builds, displays and reports. Nothing else.
 ```
 
-Everything else is a dialog launched from it (`settings.py`,
-`corrections.py`, `partmapper.py`, `partdetails.py`, `lcsc/explorer.py`).
+That last line is the rule the whole UI is organised around: **the window
+builds, displays and reports; the controller decides and writes.** Every dialog
+is opened from the controller, and every write to the board, the project
+database or the mappings table goes through it — with one refinement: a dialog
+whose entire purpose is to edit one store (Settings, Mappings, Corrections) owns
+its own writes, because routing those through the controller would add
+pass-through methods that decide nothing.
 
-## 2. The two halves of the codebase
 
-The fork has a clear seam, and it matters for how you approach a change.
+## 2. Two lineages in one package
 
-Everything below lives under `kicad_lcsc_suite/` unless stated otherwise.
+The fork has a clear seam, and it matters for how you approach a change. It is
+no longer a *directory* seam — the Phase 8 cutover collapsed the two packages
+into `lcsc_suite/` — but the lineages are still there and still worth knowing.
 
-**Upstream (`Bouni/kicad-jlcpcb-tools`)** — the board-centric half.
-`mainwindow.py`, `store.py`, `library.py`, `fabrication.py`, `datamodel.py`,
-`settings.py`, `corrections.py`, `partmapper.py`, `partdetails.py`,
-`schematicexport.py`. Style is older: broad `except`, wx idioms from the 3.x
-era, module-level SQL. Keep diffs surgical here — the fork tracks upstream
+**Upstream (`Bouni/kicad-jlcpcb-tools`)** — the board-centric half:
+`store.py`, `library.py`, `schematicexport.py`, `schematicimport.py`,
+`derive_params.py`, `dblib/`, `bom_estimation/`. Style is older: broad
+`except`, module-level SQL. Keep diffs surgical here — the fork tracks upstream
 via `UPSTREAM.txt` and gratuitous rewrites make future merges expensive.
 
 **This fork (`lcsc/`)** — the part-selection half, written fresh. Typed,
-docstring-heavy, stdlib-only, defensive about threads and teardown. New
-feature work generally belongs here.
+docstring-heavy, stdlib-only, defensive about threads and teardown.
 
-`dblib/`, `bom_estimation/`, `enrichment/` are the pure-logic packages, UI-free
-by design — which is what lets the Qt app import them unchanged through
-`lcsc_suite.shared`. The parts-database build tooling is `db_build/` (with its
-own `common/` library) at the repository root, and is not plugin code. Every
-test for any of it is in `tests/`.
+**The migration (`ui/`, `controller.py`, `kicad_bridge.py`, `parts.py`,
+`undo.py`, `export.py`, `schematic.py`, `search_source.py`)** — everything that
+used to be a wx dialog, rewritten. `fab_rules.py` is a special case: it is
+upstream's BOM/CPL arithmetic, extracted from `fabrication.py` so that the two
+halves ran the same code during the migration rather than two ports of one
+spec.
 
-**The third half is `lcsc_suite/`** — the PySide6 app. It imports *from* the
-above and never the other way round.
+`shared.py` names the toolkit-free logic layer across all three lineages.
+Importing through it is what keeps the boundary visible now that the directory
+no longer draws it.
+
+The parts-database build tooling is `db_build/` (with its own `common/`
+library) at the repository root, and is not plugin code. Every test for any of
+it is in `tests/`.
+
 
 ## 3. Data sources — three, and they disagree
 
@@ -139,7 +156,7 @@ rows pending and says so in the status line. This is also why the
 every search, which is precisely the burst that earns the ban.
 
 **Which source owns which field** matters, and the overlaps are not
-interchangeable. [`lcsc/details.py`](../kicad_lcsc_suite/lcsc/details.py) resolves the part
+interchangeable. [`lcsc/details.py`](../lcsc_suite/lcsc/details.py) resolves the part
 list's Type/Stock/LCSC Params columns and the estimator's prices, taking:
 
 - **library type** from the *search* endpoint. The assembly endpoint spells it
@@ -175,8 +192,8 @@ part cache first, then the bulk DB if one is present, then gives up — and it
 while the footprint list is being built on the UI thread. Serving a *stale*
 cache row unconditionally is deliberate: that is what makes an offline session
 work, and a day-old stock figure beats a blank column. Filling and refreshing
-the cache is `mainwindow.start_part_detail_refresh`'s job, on a worker thread,
-paced at `PART_DETAIL_REQUEST_INTERVAL`.
+the cache is the Explorer's job, on a worker pool, paced by the host breaker
+and the fill caps rather than by a fixed interval.
 
 Serving a stale row has a cost the TTL alone cannot pay off: JLC restocks a
 common part by millions overnight, so a cached `0` can outlive its truth by
@@ -201,12 +218,12 @@ below which there is nothing new to learn). Two constraints on that path:
 extra, not a condition to be repaired before the window can be used, and it no
 longer triggers an unrequested three-quarter-gigabyte download at start-up.
 
-**Parts DB variants** are declared in [`dblib/__init__.py`](../kicad_lcsc_suite/dblib/__init__.py)
+**Parts DB variants** are declared in [`dblib/__init__.py`](../lcsc_suite/dblib/__init__.py)
 (`DatabaseConfig`): `current-parts-fts5.db` (default, excludes parts unstocked
 >1 year), `parts-fts5.db` (all), `basic-parts-fts5.db`, and an empty one. The
 user picks one in Settings; `Library.refresh_library_config` re-resolves paths
 and re-runs `check_library`. Databases ship as split zip chunks and are
-reassembled by [`unzip_parts.py`](../kicad_lcsc_suite/unzip_parts.py).
+reassembled by [`unzip_parts.py`](../lcsc_suite/unzip_parts.py).
 
 **`Library.search` is gone.** It was upstream's FTS5 full-text search, and the
 LCSC Explorer's live API search replaced the part selector that called it. It
@@ -226,158 +243,95 @@ migration — users' boards carry these files.
 
 ## 5. Threading and the UI
 
-Every network or disk-heavy operation runs off the UI thread. Two marshalling
-mechanisms coexist; use the one the surrounding module uses.
+Every network or disk-heavy operation runs off the UI thread, and results reach
+the UI through exactly one mechanism: a **queued Qt signal**.
 
-**Custom wx events** ([`events.py`](../kicad_lcsc_suite/events.py)) — upstream's mechanism,
-used by `library.py` (download/unzip progress) and `mainwindow.py`
-(enrichment). Worker calls `wx.PostEvent(self.parent, SomeEvent(...))`; the
-dialog binds a handler. `events.py` degrades to a dummy factory when wx is
-absent so the logic modules stay importable under pytest.
-
-**`wx.CallAfter`** — the `lcsc/` mechanism. Worker computes, then
-`wx.CallAfter(self._handler, token, payload)`.
+`QThreadPool` workers live in
+[`ui/explorer/tasks.py`](../lcsc_suite/ui/explorer/tasks.py). A worker computes
+and emits; the connection is queued, so the slot runs on the UI thread.
+[`events.py`](../lcsc_suite/events.py) is the older path, still used by
+`library.py` and `unzip_parts.py` for download and unzip progress: those modules
+call `events.post(destination, event)` and the destination re-emits it as a Qt
+signal. Dispatching there rather than in the caller is what keeps those two
+modules free of any toolkit at all.
 
 Three rules for anything asynchronous:
 
-1. **Workers touch nothing shared.** No `store`, no `library`, no widgets.
-   They compute and hand the result back. The enrichment worker's docstring
-   in [`mainwindow.py`](../kicad_lcsc_suite/mainwindow.py#L992) states this explicitly.
-2. **Every result carries a staleness token.** `LcscExplorerDialog` has
-   `_search_token`, `_detail_token`, `_retail_token`, all bumped by
-   `_cancel_pending()`; `mainwindow` has `assembly_enrichment_generation`.
-   Handlers compare and drop stale payloads. Without this, a slow reply from
-   a superseded search overwrites a newer one — or writes metadata onto a
-   reference the user has since reassigned.
-3. **Check `_alive()` before touching a widget.** The explorer is modeless
-   and can be destroyed mid-fetch; a `CallAfter` landing on a deleted C++
-   object raises `RuntimeError` inside the event loop.
-   `LcscExplorerDialog._alive()` tests the dialog *and* a child, because
-   top-level `Destroy()` is deferred to idle and children go first.
+1. **Workers touch nothing shared.** No `store`, no `library`, no widgets. They
+   compute and hand the result back.
+2. **Every result carries a staleness token.** A slow reply from a superseded
+   search must not overwrite a newer one, and must not write metadata onto a
+   reference the user has since reassigned. Qt severs a connection to a
+   destroyed receiver, so "the window is gone" needs no guard — but "these
+   results are for the previous search" still does, and that is what the tokens
+   in `tasks.py` are.
+3. **A widget inside a view belongs to the view.** `setIndexWidget` hands
+   ownership over, and the view deletes what it owns — on `setIndexWidget(idx,
+   None)`, on row removal, and on a model reset. The Explorer's inline detail
+   pane sits inside a throwaway host for exactly this reason; getting it wrong
+   was a segfault with no traceback, not an exception. See the plan's §10.
 
-Bursty UI updates are coalesced rather than throttled: `on_bom_data_changed`
-sets a `_bom_recompute_scheduled` latch and defers one recompute through
-`wx.CallAfter`.
+Bounded fills rather than unbounded ones: retail backfill is 120 rows over 2
+workers, thumbnails 60 over 3. Two rather than five because EasyEDA's throttle
+turns a burst into a ban, and `_HostBreaker` stops a doomed fill after three
+failures instead of after a hundred.
 
-Retail backfill is the most involved case
-([`explorer.py`](../kicad_lcsc_suite/lcsc/explorer.py#L985)): a bounded pool of 5 concurrent
-fetches over the first 120 rows, each row painting as it arrives, with a
-reaper thread posting completion. Deliberately not a `ThreadPoolExecutor` —
-its workers are non-daemon and would keep KiCad alive on exit.
+## 6. KiCad-specific gotchas
 
-## 6. wx gotchas specific to KiCad
+The wx assertions that used to live here are gone with the toolkit. What
+replaced them are the IPC API's four traps, and they are worse, because three
+of the four **return success**:
 
-KiCad's bundled wxPython (4.2.2a1 / wxWidgets 3.2.8) has **assertions
-enabled**, and wxPython raises them as `wx._core.wxAssertionError`. A single
-inconsistent call therefore aborts whatever was running — typically
-`_build_ui()` stops half-way and the user gets a broken or missing window
-with no error message.
+1. **KiCad poisons the environment.** It hands its own `PYTHONHOME` to `exec`
+   plugins, which kills a venv Python with `ModuleNotFoundError: No module
+   named 'encodings'`. `kicad_plugin/run.sh` unsets it.
+2. **The API silently ignores writes to the wrong object.** `update_items` on a
+   *field* returns success and changes nothing; it must be called on the parent
+   **footprint**. Neither spelling raises.
+3. **Custom fields are not on the footprint.** They live in
+   `footprint.definition.items`. Creating one goes through
+   `definition.add_item(field)`; clone an existing `Field` and
+   `proto.ClearField("id")` rather than constructing one.
+4. **An open commit is invisible to a read.** Between `begin_commit()` and
+   `push_commit()` the board answers `get_footprints()` from the *committed*
+   state, so verifying before committing compares against the old state and
+   makes every write look like it failed — looking exactly like trap 2.
 
-Confirmed triggers:
+`kicad_bridge.py` wraps all four so no caller can hit them: `_Board.apply`
+snapshots, commits, pushes, verifies by re-reading, and restores the snapshot in
+a second commit on mismatch. The price is that a failed write costs two entries
+in KiCad's undo history rather than none; the board ends up unchanged either
+way.
 
-- `sizer.Add(win, 0, wx.ALIGN_CENTER_VERTICAL)` on a **vertical**
-  `BoxSizer`, and the mirror case (horizontal alignment on a horizontal
-  sizer). Audit every alignment flag against its sizer's orientation.
-- Importing the plugin package after `wx.App` exists — `__init__.py` calls
-  `JLCPCBPlugin().register()`, which asserts on `PgmOrNull()` outside KiCad.
-  In standalone probes, import plugin modules *before* creating `wx.App`.
+**KiCad's undo cannot reach the project database**, which is why
+[`undo.py`](../lcsc_suite/undo.py) exists. A removal clears the board field
+*and* the number in `project.db`; undoing only the board half leaves the table
+still saying unassigned. A reversal here is a new verified write, not a
+rollback.
 
-Two more layout facts, both learned the hard way:
-
-- **DataView column widths set during construction are discarded** — the
-  native control has not been realised yet. Restate them once the window is
-  shown (`_on_first_shown`, reached via `wx.CallAfter` from `__init__`).
-- **The explorer's column widths are derived, not fixed.** The numbers in
-  `COLUMNS` are base widths; `_resize_columns` shares whatever the grid has
-  spare over the text columns listed in `FLEX_WEIGHTS`, and takes it back per
-  `SHRINK_ORDER` — spacer, then text, then figures — down to the `MIN_SHARE`
-  floors when the grid is too narrow. Below those floors it stops and lets a
-  horizontal scrollbar appear; above them a row always fits the window.
-  The filter panel collapses via the Filters toggle (`_set_filters_shown`, a
-  sizer show/hide) and the detail pane opens by selecting a part and closes on
-  a repeat click on it (`_set_details_shown`) — it has no button of its own.
-  Details live either in a vertical splitter or as an inline expanded row
-  directly under the selection. Inline mode inserts blank DataView rows, moves
-  the following results down, and overlays the detail panel on that reserved
-  space. Every one of those states has to recompute widths. It is driven off
-  the grid's own `EVT_SIZE`, coalesced through a `_resize_scheduled` latch, and
-  skipped when neither the widths nor the hidden set changed.
-- **A custom renderer paints into the size *it* asks for**, not into its
-  column. macOS hands `Render` a rect as wide as `GetSize().width` and leaves
-  the rest of the column blank, so a renderer that does not know its column
-  wraps and clips text inside that box — a 100px box in a 470px column, which
-  is what truncated "Multilayer Ceramic Capacitor" to "Capacito".
-  `_resize_columns` pushes each width into its renderer (`set_cell_width`).
-- **The native DataView is wider than the widths you set it.** It keeps an
-  indent before the first cell and adds a fixed padding to every column — 16px
-  and 17px a column on macOS — so a header whose numbers add up to exactly the
-  client width overflows it by 135px and grows a scrollbar. Both are measured
-  off a laid-out row by `_measure_grid_metrics` (from the column origins, not
-  the row width: the last column absorbs the leftover, which would feed back
-  in) and are zero on the generic DataView.
-- **A `wxBoxSizer`'s own minimum multiplies each stretchable item's minimum by
-  the *total* proportion**, so a 350px block at proportion 6-of-15 claims
-  875px. Get that wrong and the sizer decides the space is insufficient and
-  shrinks the item with no natural width of its own to defend itself — the
-  parameter table went to 85px this way. Blocks with a natural width (the
-  previews, the stock cards) go in at proportion 0 for this reason.
-- **`GetItemRect` returns `(0, 0, 0, 0)` for a scrolled-out row**, which is no
-  use for placing an overlay meant to scroll *with* the rows. `_row_top`
-  derives any row's position from `GetTopItem`, which is visible by definition.
-  Native scroll notifications are not dependable either — a trackpad scroll or
-  an `EnsureVisible` can move rows with no event — so the open inline panel
-  re-checks its position on a timer (`INLINE_TRACK_MS`) and clips itself to the
-  visible slice inside `inline_clip` instead of hiding when it no longer fits
-  whole.
-- **HiDPI**: size everything through `HighResWxSize(window, size)` and
-  `GetScaleFactor` from [`helpers.py`](../kicad_lcsc_suite/helpers.py); icons through
-  `loadIconScaled`.
-
-**Colour** must come from [`lcsc/theme.py`](../kicad_lcsc_suite/lcsc/theme.py) —
-`colour(name)`, `stock_colour(count)`, `card_background()`, `blend()`. KiCad
-follows the desktop light/dark appearance and a literal tuned on white is
-unreadable on dark. `helpers.isDarkAppearance()` is the underlying probe.
-
-Palette names carry meaning and are not interchangeable. `bad` is the error
-red — zero stock, and a BOM part with no LCSC number. `standard` is the amber
-advisory for a part that pushes the board into Standard-mode pricing: nothing
-is broken, it just costs more. Those two shared `bad` once, which made a
-pricing note indistinguishable from a failure.
-
-**Multi-select filters** live in
-[`lcsc/facetfilter.py`](../kicad_lcsc_suite/lcsc/facetfilter.py): a `wx.ComboCtrl` whose popup
-is a `wx.CheckListBox`. Two non-obvious constraints, both found by
-`scripts/gui_probe.py`:
-
-- wx writes `ComboPopup.GetStringValue()` back into the control every time the
-  popup closes, so the popup must defer to the owner's summary. Returning a
-  constant blanks the row as soon as the user opens and closes the list.
-- `ComboPopup.Create` runs lazily on first show, so a probe that never opens
-  the popup cannot tell you whether this wx build can host one. `Popup()` /
-  `Dismiss()` in the probe is what makes that failure mode visible.
 
 ## 7. Feature flows
 
 ### Assign a part (the main loop)
 
 ```text
-user selects footprints in pcbnew
-  -> mainwindow.select_part / open_lcsc_explorer
-       builds {reference: search string}
-  -> LcscExplorerDialog (singleton; re-targeted via update_for if already open)
-       _start_search      -> api.jlc_search        (thread, _search_token)
+user selects rows in the part table (or double-clicks one)
+  -> SuiteController.open_explorer
+       builds the keyword from the row's value + package ("1uF 0805", not "1uF")
+  -> ExplorerWindow (one; re-targeted if already open)
+       search             -> api.jlc_search        (pool, search token)
        build_facets       -> multi-select filters from real attributes
-       row selected       -> api.stock_report      (thread, _detail_token)
-                          -> easyeda previews      (thread)
-                          -> product photo         (thread, never blocking)
-       retail backfill    -> api.retail_stock x N  (2-way pool, _retail_token;
+       row selected       -> api.stock_report      (pool, detail token)
+                          -> easyeda previews      (pool)
+                          -> product photo         (pool, never blocking)
+       retail backfill    -> api.retail_stock x N  (2-way pool, retail token;
                                                     LCSC retail view only)
-       thumbnail backfill -> api.fetch_image x N   (3-way pool, _thumb_token)
-       thumbnail clicked  -> PhotoViewerDialog     (thread, _token)
-  -> "Assign" -> wx.PostEvent(AssignPartsEvent) -> mainwindow.assign_parts
-       -> store.set_lcsc  -> BomDataChangedEvent -> coalesced BOM recompute
-       -> start_part_detail_refresh -> lcsc.details.fetch_details (thread)
-            -> PartDetailsProgressEvent -> library.set_cached_part_details
+       thumbnail backfill -> api.fetch_image x N   (3-way pool, thumb token)
+       thumbnail clicked  -> PhotoViewer           (retargetable while open)
+  -> "Assign" -> assign_requested signal -> SuiteController.assign_number
+       -> board first (verified re-read), project database second
+       -> UndoStack records one entry per action
+       -> estimator recompute; Type / Stock / Params re-resolve from the cache
 ```
 
 The retail and thumbnail passes start **together**, and share nothing: the
@@ -390,7 +344,7 @@ and the pass never finishes.
 
 `ThumbCell` holds the LCSC *code*, not a bitmap: photos arrive long after rows
 do, and there is no valid "empty bitmap" to sit in while waiting. Clicking one
-opens [`lcsc/photoviewer.py`](../kicad_lcsc_suite/lcsc/photoviewer.py) on the 900px original,
+opens [`lcsc/photoviewer.py`](../lcsc_suite/lcsc/photoviewer.py) on the 900px original,
 with the part's other angles (`api.assembly_photo_urls`) behind the arrow
 keys. The viewer is modeless and reused — clicking a second thumbnail
 retargets the open window rather than stacking another.
@@ -482,25 +436,34 @@ it registers globally with an absolute path instead (`is_inside` decides).
 **KiCad caches lib-tables at startup**, so a fresh import needs a restart to
 appear in the chooser — expected, not a bug to fix.
 
-### Generate fabrication data
+### Export the BOM and CPL
 
-`mainwindow.generate_fabrication_data` is a sequence of
-`run_generation_step` calls, each reporting into the progress gauge:
+Gerber and drill output is **out of scope** — another plugin handles
+fabrication. What remains is the two files that carry LCSC data, and nothing
+else can produce them, because nothing else knows this project's assignments.
 
 ```text
-part consistency check  (same LCSC, different values -> confirm)
-order-number placeholder check
-pre hook                (HOOKS.md; nonzero exit -> Continue/Cancel dialog)
-optional DRC            (run_drc_before_gerber_export)
-fabrication.generate_geber / generate_excellon / zip_gerber_excellon
-fabrication.generate_bom / generate_cpl
-store.increment_generation_count
-post hook               (only after all three artifacts succeed)
+SuiteController.export_bom_cpl
+  consistency check     (same LCSC, different values -> confirm)
+  Exporter.export       -> fab_rules.bom_rows   (grouping, DNP, the 1920-char
+                                                 designator chunker)
+                        -> fab_rules.cpl_row    (corrections, rotation, offsets)
+  report                -> what was written, and what was left out
 ```
 
-CPL positions pass through `fix_rotation` / `fix_position`, which apply the
-corrections DB — regex on footprint name → rotation and offset. This is the
-part most sensitive to KiCad version differences.
+Three pieces of geometry decide whether the CPL is right, and all three were
+measured against KiCad's own Python rather than assumed:
+
+- the position is the **centre of the merged bounding box of every pad**, not
+  the footprint origin. Those agree on a symmetric part and disagree on most
+  others, so getting it wrong looks plausible on the first board you try;
+- `FromMM` **truncates** (`int(mm * 1e6)`), and `BOX2I::GetCenter` is
+  `position + size // 2`, so a box of odd width centres one nanometre low;
+- arithmetic stays in **integer nanometres until the last line**, because
+  dividing early turns `123.456789` into `123.45678900000001`.
+
+`Board.pad_centers_nm()` asks KiCad for every pad box on the board in one round
+trip — 379 pads, not 110 requests — and only when a CPL is actually written.
 
 ### BOM estimation
 
@@ -510,10 +473,10 @@ Deliberately layered so the arithmetic is testable without wx:
 bom_estimation/pricing.py   pure: calculate_bom_estimate, get_unit_price, ...
 bom_estimation/view.py      pure: formatting + view models
 bom_estimation/help_text.py copy
-bom_widget.py               wx glue: BomEstimatorWidget + BomEstimatorController
+ui/bom_estimator.py         Qt glue: the summary line and the enrichment pass
 ```
 
-Keep `pricing.py` free of wx and of transport. Missing metadata is filled by
+Keep `pricing.py` free of any toolkit and of transport. Missing metadata is filled by
 `enrichment/providers.py` (`LCSCAssemblyMetadataProvider`, rate-limited to
 1 req/s) on a worker thread, results landing via
 `AssemblyEnrichmentProgressEvent` and persisted with
@@ -541,14 +504,25 @@ variants and their filters.
 
 Kept deliberately small so the plugin survives KiCad upgrades:
 
-- **Only `GetBoard().GetFileName()`** is required from the `pcbnew` API for
-  core operation, which is why KiCad 7–10 all work.
-  `standalone_impl.KicadStub` mirrors the subset actually used — extend it
-  whenever you reach for a new `pcbnew` call, or standalone mode breaks.
+- **The whole of KiCad is reached through `kicad_bridge.py`** and nothing else.
+  It is a small surface — board name, footprints and their fields, the
+  drill/place origin, pad boxes, commits — which is what makes the IPC API's
+  churn between 10.x point releases survivable, and what makes `FixtureBoard` a
+  credible stand-in. `kicad-python` is pinned for the same reason.
+- **KiCad 10.0 is the floor.** The IPC API does not exist before it, and the
+  plugin manifest KiCad reads to launch this app is a KiCad 10 feature.
 - **Paths** compare via `normcase`/`abspath` so `C:\Users` and `c:/users`
   match on Windows.
-- **Plugin dir discovery** is per-platform: `~/Documents/KiCad/<ver>` on
-  macOS/Windows, `$XDG_DATA_HOME/kicad/<ver>` on Linux.
+- **Plugin dir discovery** is per-platform: `~/Documents/KiCad/<ver>/plugins`
+  on macOS/Windows, `$XDG_DATA_HOME/kicad/<ver>/plugins` on Linux.
+- **Settings and databases live in per-user directories**, never beside the
+  code. Deriving either from a module's own location has broken twice — see
+  `config.adopt_data_directory` — and a frozen binary's install directory may
+  be read-only.
+- **Layout is identical across platforms and that is checked**, not asserted:
+  Fusion is forced, font sizes are explicit, and CI renders every screen on
+  `windows-latest` and compares the widget tree against the committed macOS
+  reference.
 - **TLS trust** falls back `LCSC_CA_BUNDLE` → `SSL_CERT_FILE` →
   `REQUESTS_CA_BUNDLE` → certifi → interpreter default → distro bundles
   (`lcsc/api.py::ssl_context`). Verification is **never** disabled; with no

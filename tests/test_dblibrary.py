@@ -3,7 +3,7 @@
 import re
 import time
 
-from kicad_lcsc_suite.dblib import (
+from lcsc_suite.dblib import (
     DEFAULT_LIBRARY,
     LIBRARY_CONFIGS,
     DatabaseConfig,

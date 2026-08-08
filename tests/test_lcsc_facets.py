@@ -10,7 +10,7 @@ worth having, so it is worth pinning down.
 covered by `scripts/gui_probe.py` instead.
 """
 
-from kicad_lcsc_suite.lcsc import api
+from lcsc_suite.lcsc import api
 
 
 def _hit(lcsc: str, **attributes):

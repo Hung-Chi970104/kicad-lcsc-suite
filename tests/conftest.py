@@ -1,7 +1,7 @@
 """Shared pytest setup: put the repository root on ``sys.path``.
 
 That is the whole job. Everything under test is a real package reachable from
-the root — ``kicad_lcsc_suite`` (the wx plugin and the logic both halves share),
+the root — ``lcsc_suite`` (the wx plugin and the logic both halves share),
 ``lcsc_suite`` (the Qt app) and ``db_build`` (the database-build Action) — so a
 test imports them by name and nothing else is needed.
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from kicad_lcsc_suite.bom_estimation.pricing import (  # pylint: disable=import-error
+from lcsc_suite.bom_estimation.pricing import (  # pylint: disable=import-error
     DEFAULT_PRICING,
     AssemblyPricing,
     _collect_billable_bom_parts,
