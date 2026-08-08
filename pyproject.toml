@@ -169,8 +169,11 @@ split-on-trailing-comma = false
 "db_build/common/filemgr.py" = ["T201"]
 "db_build/common/partsdb.py" = ["T201"]
 "db_build/common/progress.py" = ["T201"]
-# A CLI dev tool whose output is the report it prints.
-"scripts/gui_probe.py" = ["T201"]
+# A CLI dev tool whose output is the report it prints. SHOT_DIR is module-level
+# state set once from argv: the capture happens inside each probe's `inspect`
+# closure, several frames below the parsing, and threading a directory through
+# every one of them would change signatures that exist for other reasons.
+"scripts/gui_probe.py" = ["T201", "PLW0603"]
 # The Explorer fixture capture. One-shot, run by hand, and its printed progress
 # is the only way to see a host starting to refuse partway through.
 "scripts/capture_explorer_fixture.py" = ["T201", "E402"]
