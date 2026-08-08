@@ -24,6 +24,7 @@ shells do not have, so assert on geometry and state, never on screenshots.
 
 import argparse
 import dataclasses
+import importlib
 import os
 import sys
 import tempfile
@@ -817,15 +818,13 @@ EXTRA_DIALOGS = (
 def capture_dialogs(parent) -> None:
     """Build and screenshot the dialogs no other check here opens.
 
-    Each is imported at call time rather than at the top of the file, because
-    two of them are among the four upstream modules ``ruff format`` still wants
-    to rewrite and importing them unconditionally would drag that into every
-    run of this script.
+    Each module is resolved by name at call time rather than imported at the
+    top of the file: two of them are among the four untouched upstream modules
+    CLAUDE.md says to leave alone, and a top-level import would make every run
+    of this script pay to load a dialog only ``--shot`` ever builds.
     """
     if not SHOT_DIR:
         return
-    import importlib
-
     for name, module_name, class_name, argument in EXTRA_DIALOGS:
         try:
             module = importlib.import_module(f"kicad_lcsc_suite.{module_name}")
