@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
+import tempfile
 
 from . import app as app_module, kicad_bridge
 from .config import Settings, adopt_data_directory, legacy_settings_path
@@ -55,6 +57,17 @@ def main(argv=None) -> int:
     try:
         if args.fixture:
             board = kicad_bridge.open_fixture(args.fixture)
+            # The committed fixture names a project path that does not exist,
+            # deliberately — nothing should be able to write into the checkout
+            # by opening it. But store.py really does create
+            # ``<project>/jlcpcb/project.db``, so opening it here without
+            # somewhere to put that died on `Read-only file system: '/fixture'`.
+            # The probe and the tests have always relocated first; this entry
+            # point never did, which made a documented way to run the app one
+            # that could not start.
+            board.relocate(
+                os.path.join(tempfile.mkdtemp(prefix="lcsc-fixture-"), "tempctrl")
+            )
         else:
             board = kicad_bridge.connect()
     except kicad_bridge.NotConnected as exc:
