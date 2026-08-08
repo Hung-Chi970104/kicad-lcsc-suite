@@ -40,6 +40,30 @@ def configure_logging(level: int = logging.INFO) -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
+def _ensure_offscreen_fonts() -> None:
+    """Point Qt at the system fonts when the offscreen platform cannot find any.
+
+    On Linux and macOS the offscreen plugin reaches the platform's own font
+    database and this does nothing. **On Windows it does not**: it falls back to
+    a basic database that reads a directory, and with no directory to read every
+    glyph renders as a missing-glyph box.
+
+    That is not cosmetic and it is not only CI's problem. It silently converts a
+    screenshot into a picture of tofu whose *metrics* are wrong too — the first
+    Windows render came back with the main toolbar's extension arrow showing,
+    which reads exactly like the real "the buttons do not fit on Windows" bug
+    this migration exists to catch. A gate that cannot tell those two apart is
+    worse than no gate.
+
+    Only ever a default: an explicit ``QT_QPA_FONTDIR`` wins.
+    """
+    if sys.platform != "win32" or os.environ.get("QT_QPA_FONTDIR"):
+        return
+    fonts = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+    if os.path.isdir(fonts):
+        os.environ["QT_QPA_FONTDIR"] = fonts
+
+
 def build_application(
     argv: Optional[list] = None,
     theme_mode: Optional[str] = None,
@@ -56,6 +80,7 @@ def build_application(
         # Fonts are the one thing the offscreen platform still probes for, and
         # the warning it prints otherwise ends up in every screenshot log.
         os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.fonts=false")
+        _ensure_offscreen_fonts()
 
     existing = QApplication.instance()
     if existing is not None:

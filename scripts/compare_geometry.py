@@ -55,8 +55,16 @@ if hasattr(sys.stdout, "reconfigure"):
 #: ``ClassName#objectName 100x20@4,8 'text' [hidden]`` — the line ``dump_tree``
 #: writes. The geometry is the only part this needs to pull out separately;
 #: everything else is identity and is compared as text.
+#:
+#: Anchored on the **geometry**, with everything before it taken as the name,
+#: rather than assuming the name is one whitespace-free token. It is not:
+#: ``FacetFilter#facet-Temperature Coefficient`` has a space in its object
+#: name, and the first Windows run reported all twelve Explorer screens as
+#: structural failures because those lines fell through to a verbatim
+#: comparison that included the pixels. A layout gate that cries structure at
+#: a three-pixel difference is one nobody will read twice.
 LINE = re.compile(
-    r"^(?P<indent>\s*)(?P<identity>\S+)\s+"
+    r"^(?P<head>.*?)"
     r"(?P<w>\d+)x(?P<h>\d+)@(?P<x>-?\d+),(?P<y>-?\d+)"
     r"(?P<rest>.*)$"
 )
@@ -124,7 +132,7 @@ def identity_of(line: str) -> str:
     """
     match = LINE.match(line)
     if match:
-        return f"{match.group('indent')}{match.group('identity')}{match.group('rest')}"
+        return f"{match.group('head').rstrip()}{match.group('rest')}"
     column = COLUMN.match(line)
     if column:
         return f"{column.group('indent')}col {column.group('index')} {column.group('rest')}"
@@ -167,6 +175,16 @@ def compare_screen(name: str, left: list, right: list) -> tuple:
         return structural, divergences
 
     for a, b in zip(left, right):
+        # A hidden widget's *visibility* matters and is compared above, as part
+        # of the identity — that is what caught the main toolbar's extension
+        # arrow being shown on Windows. Its *size* does not: nobody can see it,
+        # and Qt does not keep it stable. A hidden scroll container inside the
+        # Explorer's inline pane measures 100px alone and 1434px in an --all
+        # run, because the layout it last participated in was a different
+        # screen's. Measuring that is measuring nothing, and it would make the
+        # gate flaky in the one direction a gate must never be.
+        if "[hidden]" in a:
+            continue
         left_numbers, right_numbers = numbers_of(a), numbers_of(b)
         for field, value in left_numbers.items():
             other = right_numbers.get(field)
