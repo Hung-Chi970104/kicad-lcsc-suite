@@ -200,7 +200,7 @@ is needed for both code changes and freshly imported libraries.
 fixture:
 
 ```bash
-.venv/bin/python -m lcsc_suite --fixture
+.venv/bin/python -m lcsc_suite --fixture lcsc_suite/fixtures/board.json
 ```
 
 The fixture is a real 110-footprint board serialised to JSON, and

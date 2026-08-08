@@ -130,7 +130,7 @@ ours, and which Python and PySide6 the virtualenv has. To check the app starts
 at all without KiCad running:
 
 ```bash
-.venv/bin/python -m lcsc_suite --fixture
+.venv/bin/python -m lcsc_suite --fixture lcsc_suite/fixtures/board.json
 ```
 
 If the toolbar button does nothing, the launcher's log is the only place a

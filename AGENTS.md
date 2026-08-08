@@ -32,7 +32,7 @@ Entry points:
 |---|---|
 | [`kicad_plugin/plugin.json`](kicad_plugin/plugin.json) | the IPC manifest KiCad reads; declares the toolbar button |
 | [`kicad_plugin/run.sh`](kicad_plugin/run.sh) | the launcher. **Unsets `PYTHONHOME`** (trap 1) then runs the venv Python |
-| [`lcsc_suite/__main__.py`](lcsc_suite/__main__.py) | the app. `--fixture` runs it against `fixtures/board.json` with no KiCad at all |
+| [`lcsc_suite/__main__.py`](lcsc_suite/__main__.py) | the app. `--fixture PATH` runs it against a JSON board with no KiCad at all |
 
 ## Hard rules
 
