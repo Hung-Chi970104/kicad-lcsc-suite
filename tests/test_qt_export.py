@@ -37,7 +37,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from lcsc_suite import app as app_module, kicad_bridge  # noqa: E402
 from lcsc_suite.config import DEFAULTS, Settings  # noqa: E402
-from lcsc_suite.controller import build as build_controller  # noqa: E402
+from lcsc_suite.controller import (  # noqa: E402
+    build as build_controller,
+    export_location,
+)
 from lcsc_suite.export import Exporter  # noqa: E402
 from lcsc_suite.parts import PartList  # noqa: E402
 from lcsc_suite.shared import fab_rules  # noqa: E402
@@ -415,3 +418,58 @@ class _FailingExporter:
 
     def export(self):
         raise OSError(f"Not a directory: {self.path}")
+
+
+# ---------------------------------------------------------------------------
+# Where the files went
+#
+# The report names the directory, and that one line decides how wide the dialog
+# is: QMessageBox sizes itself to its informative text. Spelling the absolute
+# path made the width a property of where the user keeps their projects, which
+# had two consequences worth a test each — a screenshot gate that could not
+# settle on one answer, and a dialog that could never have matched across
+# platforms, since a Windows path is a different length from a macOS one.
+# ---------------------------------------------------------------------------
+
+
+def test_the_report_names_the_directory_without_its_absolute_prefix():
+    """Three components: the project, and the two the export always writes to."""
+    assert (
+        export_location("/Users/someone/Research/tempctrl/jlcpcb/production_files")
+        == "…/tempctrl/jlcpcb/production_files"
+    )
+
+
+def test_a_windows_path_and_a_posix_path_render_the_same_length():
+    """The claim the cross-platform gate rests on, for the one path-bearing screen."""
+    posix = export_location("/Users/someone/kicad/tempctrl/jlcpcb/production_files")
+    windows = export_location(
+        r"C:\Users\someone\Documents\KiCad\tempctrl\jlcpcb\production_files"
+    )
+    assert posix == windows == "…/tempctrl/jlcpcb/production_files"
+
+
+def test_depth_does_not_change_the_line():
+    """Two projects at different depths produce the same width of dialog."""
+    shallow = export_location("/a/tempctrl/jlcpcb/production_files")
+    deep = export_location("/a/b/c/d/e/f/g/tempctrl/jlcpcb/production_files")
+    assert shallow == deep
+
+
+def test_a_path_with_nothing_to_drop_keeps_its_leading_marker_off():
+    """No ellipsis when nothing was elided — it would name a parent that is not there."""
+    assert export_location("tempctrl/jlcpcb/production_files") == (
+        "tempctrl/jlcpcb/production_files"
+    )
+
+
+def test_the_full_path_is_still_reachable(board, settings):
+    """Elided on the face of the dialog, exact in the details pane."""
+    parts = PartList(board, settings=settings)
+    controller = build_controller(board, parts, settings=settings)
+    result = controller.run_export()
+    box = controller.build_export_report(result)
+    directory = os.path.dirname(result.bom_path)
+    assert directory not in box.informativeText()
+    assert directory in box.detailedText()
+    controller.window.close()

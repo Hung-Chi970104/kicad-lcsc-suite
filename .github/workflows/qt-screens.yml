@@ -95,6 +95,53 @@ jobs:
           name: qt-screens
           path: /tmp/screens
 
+  # ---------------------------------------------------------------------------
+  # Windows. §7 of the migration plan asks for "one real Windows pass per phase"
+  # and it was never once run — it is the single claim this whole migration
+  # rests on that had no evidence behind it. Doing it by hand per phase is what
+  # made it never happen, so it is a job.
+  #
+  # It compares *geometry*, not pixels. Pixels cannot work: the app forces
+  # Fusion and states its font size, but not a font *family*, so text renders in
+  # Segoe UI here and in the system face on macOS. Those are different faces and
+  # they rasterise differently — a pixel gate would fail forever for a reason
+  # that is not a bug.
+  #
+  # What geometry does check is the part that must not differ: the widget tree,
+  # every window's own size, and how far text metrics push each control around.
+  # See scripts/compare_geometry.py for why those three are graded separately.
+  # ---------------------------------------------------------------------------
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the app's dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "PySide6>=6.7,<7" "kicad-python>=0.4,<1" pytest
+
+      - name: Render every screen, light and dark
+        run: python scripts/qt_probe.py --all --theme both --out screens-windows --geometry-out geometry-windows.txt
+
+      - name: Compare the layout against the committed macOS reference
+        run: python scripts/compare_geometry.py docs/screens/geometry.txt geometry-windows.txt --reference-name macos --compared-name windows
+
+      - name: Upload the Windows screens and geometry
+        # Always: a failing comparison is a thing to look at, not to guess at,
+        # and the PNGs are the only way to see what the numbers mean.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qt-screens-windows
+          path: |
+            screens-windows
+            geometry-windows.txt
+
   test:
     runs-on: ubuntu-latest
     steps:
