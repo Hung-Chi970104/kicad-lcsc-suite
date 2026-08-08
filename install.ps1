@@ -3,26 +3,24 @@
     Install kicad-lcsc-suite into KiCad's plugin directories (Windows).
 
 .DESCRIPTION
-    Two halves, because a migration is underway (docs/QT_MIGRATION_PLAN.md):
-
-      App  the new out-of-process PySide6 application. Bootstraps a virtualenv,
-           pip-installs PySide6 + kicad-python, and registers an IPC API plugin
-           in  <Documents>\KiCad\<ver>\plugins\lcsc_suite  so KiCad shows a
-           toolbar button.
-      Wx   the legacy in-process wxPython plugin. Junctions the checkout into
-           <Documents>\KiCad\<ver>\scripting\plugins\kicad_lcsc_suite. Removed
-           at the migration's Phase 8 cutover; until then both can be installed
-           and they do not collide.
+    One half now. The Phase 8 cutover removed the in-process wxPython plugin
+    (docs/QT_MIGRATION_PLAN.md); what installs is the out-of-process PySide6
+    application. It bootstraps a virtualenv, pip-installs PySide6 +
+    kicad-python, and registers an IPC API plugin in
+    <Documents>\KiCad\<ver>\plugins\lcsc_suite so KiCad shows a toolbar button.
 
     Junctions rather than symlinks: they need no administrator rights.
 
-    NOTE: the app half adds a one-time setup step (a virtualenv) the wx plugin
-    never had. That is a deliberate product decision recorded in the migration
-    plan's §8.
+    -App is still accepted and does nothing, so a note or a script carrying it
+    keeps working. -Wx is refused with a message rather than ignored: it used
+    to install something, and silently installing nothing is the worse answer.
+
+    NOTE: this adds a one-time setup step (a virtualenv) the wx plugin never
+    had. That is a deliberate product decision recorded in the migration plan's
+    §8. KiCad 10 or newer is required.
 
 .EXAMPLE
     .\install.ps1
-    .\install.ps1 -App
     .\install.ps1 -Version 10.0
     .\install.ps1 -Uninstall
     .\install.ps1 -List
@@ -39,17 +37,19 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $Src = Split-Path -Parent $MyInvocation.MyCommand.Path
-# The plugin package directory, whose name is what KiCad imports it as.
-$WxLinkName = 'kicad_lcsc_suite'
 $AppLinkName = 'lcsc_suite'
+# Where the wx plugin used to be junctioned. Kept so -Uninstall can still clean
+# up after an install made before the cutover; nothing writes it any more.
+$LegacyWxLinkName = 'kicad_lcsc_suite'
 $Venv = Join-Path $Src '.venv'
 # Pinned rather than floating: the IPC API is young and its wire format has
 # changed between KiCad 10.x point releases.
 $AppRequirements = @('PySide6>=6.7,<7', 'kicad-python>=0.4,<1')
 
-# Neither switch given means both halves.
-$DoApp = $App -or (-not $App -and -not $Wx)
-$DoWx = $Wx -or (-not $App -and -not $Wx)
+if ($Wx) {
+    Write-Error 'The wx plugin was removed at the Phase 8 cutover. See docs/QT_MIGRATION_PLAN.md; this installs the Qt app.'
+    exit 2
+}
 
 $KicadDocs = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'KiCad'
 if (-not (Test-Path $KicadDocs)) {
@@ -67,7 +67,7 @@ if (-not $Version) {
 }
 
 $KicadDir = Join-Path $KicadDocs $Version
-$WxTarget = Join-Path $KicadDir "scripting\plugins\$WxLinkName"
+$WxTarget = Join-Path $KicadDir "scripting\plugins\$LegacyWxLinkName"
 $AppTarget = Join-Path $KicadDir "plugins\$AppLinkName"
 
 function Describe-Target([string]$Target) {
@@ -121,14 +121,15 @@ if ($List) {
     } else {
         Write-Host '  python   : absent'
     }
-    Write-Host "wx target  : $WxTarget"
+    Write-Host "wx target  : $WxTarget (removed at the cutover)"
     Write-Host "  status   : $(Describe-Target $WxTarget)"
     return
 }
 
 if ($Uninstall) {
-    if ($DoApp) { Remove-Ours $AppTarget -AllowDirectory }
-    if ($DoWx) { Remove-Ours $WxTarget }
+    Remove-Ours $AppTarget -AllowDirectory
+    # Unconditional: an install predating the cutover left a junction here.
+    Remove-Ours $WxTarget
     Write-Host ''
     Write-Host "The virtualenv at $Venv was left in place; delete it by hand if"
     Write-Host 'you want it gone.'
@@ -174,54 +175,54 @@ function Test-ApiServer {
     }
 }
 
-if ($DoApp) {
-    $venvPython = Join-Path $Venv 'Scripts\python.exe'
-    if (-not (Test-Path $venvPython)) {
-        $python = Find-Python
-        Write-Host "Creating virtualenv at $Venv using $python"
-        & $python -m venv $Venv
-    }
-    Write-Host 'Installing app dependencies'
-    & $venvPython -m pip install --upgrade --quiet pip
-    & $venvPython -m pip install --quiet @AppRequirements
-
-    # Copied, not junctioned. The two files below have to be *rewritten* for
-    # Windows — the manifest's entrypoint, and the checkout path run.cmd cannot
-    # discover on its own — and writing those through a junction would dirty
-    # the git checkout. Only the manifest, the launcher and the icons live here;
-    # the app's Python stays in the checkout and still updates with `git pull`.
-    if (Test-Path $AppTarget) {
-        $existing = Get-Item $AppTarget -Force
-        if ($existing.LinkType) { $existing.Delete() }
-        else { Remove-Item $AppTarget -Recurse -Force }
-    }
-    New-Item -ItemType Directory -Force -Path $AppTarget | Out-Null
-    Copy-Item -Path (Join-Path $Src 'kicad_plugin\*') -Destination $AppTarget -Recurse -Force
-
-    Set-Content -Path (Join-Path $AppTarget 'repo_root.txt') -Value $Src -Encoding ASCII -NoNewline
-    $manifestPath = Join-Path $AppTarget 'plugin.json'
-    $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
-    $manifest.actions[0].entrypoint = 'run.cmd'
-    $manifest | ConvertTo-Json -Depth 10 | Set-Content -Path $manifestPath -Encoding UTF8
-
-    Write-Host 'Installed the LCSC Suite app'
-    Write-Host "  source : $(Join-Path $Src 'kicad_plugin')"
-    Write-Host "  target : $AppTarget"
-    Write-Host "  python : $(& $venvPython --version 2>&1)"
-    Test-ApiServer
+$venvPython = Join-Path $Venv 'Scripts\python.exe'
+if (-not (Test-Path $venvPython)) {
+    $python = Find-Python
+    Write-Host "Creating virtualenv at $Venv using $python"
+    & $python -m venv $Venv
 }
+Write-Host 'Installing app dependencies'
+& $venvPython -m pip install --upgrade --quiet pip
+& $venvPython -m pip install --quiet @AppRequirements
 
-# --- the legacy wx plugin --------------------------------------------------
+# Copied, not junctioned. The two files below have to be *rewritten* for
+# Windows — the manifest's entrypoint, and the checkout path run.cmd cannot
+# discover on its own — and writing those through a junction would dirty
+# the git checkout. Only the manifest, the launcher and the icons live here;
+# the app's Python stays in the checkout and still updates with `git pull`.
+if (Test-Path $AppTarget) {
+    $existing = Get-Item $AppTarget -Force
+    if ($existing.LinkType) { $existing.Delete() }
+    else { Remove-Item $AppTarget -Recurse -Force }
+}
+New-Item -ItemType Directory -Force -Path $AppTarget | Out-Null
+Copy-Item -Path (Join-Path $Src 'kicad_plugin\*') -Destination $AppTarget -Recurse -Force
 
-if ($DoWx) {
-    $WxSource = Join-Path $Src $WxLinkName
-    New-Junction $WxTarget $WxSource
-    Write-Host 'Installed the legacy wx plugin'
-    Write-Host "  source : $WxSource"
+Set-Content -Path (Join-Path $AppTarget 'repo_root.txt') -Value $Src -Encoding ASCII -NoNewline
+$manifestPath = Join-Path $AppTarget 'plugin.json'
+$manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+$manifest.actions[0].entrypoint = 'run.cmd'
+$manifest | ConvertTo-Json -Depth 10 | Set-Content -Path $manifestPath -Encoding UTF8
+
+Write-Host 'Installed the LCSC Suite app'
+Write-Host "  source : $(Join-Path $Src 'kicad_plugin')"
+Write-Host "  target : $AppTarget"
+Write-Host "  python : $(& $venvPython --version 2>&1)"
+Test-ApiServer
+
+# --- the legacy wx plugin, if one is still linked ---------------------------
+#
+# Not installed any more — removed. But an install from before the cutover left
+# a junction pointing at a directory that no longer exists, and KiCad logs an
+# import error for it on every start. Clearing it is the one thing this script
+# still has to say about the wx half.
+
+if (Test-Path $WxTarget) {
+    Remove-Ours $WxTarget
+    Write-Host 'Removed the old wx plugin link'
     Write-Host "  target : $WxTarget"
 }
 
 Write-Host ''
 Write-Host 'Restart KiCad. In the PCB editor you will find:'
-if ($DoApp) { Write-Host "  the 'LCSC Suite' toolbar button (the new Qt app)" }
-if ($DoWx) { Write-Host '  Tools -> External Plugins -> LCSC Suite (the legacy wx plugin)' }
+Write-Host "  the 'LCSC Suite' toolbar button"
