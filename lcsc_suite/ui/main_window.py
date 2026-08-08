@@ -148,6 +148,12 @@ class MainWindow(QMainWindow):
     #: called from each of the six places that reload — one connection cannot be
     #: forgotten the way a seventh call site can.
     parts_reloaded = Signal()
+    #: Emitted as the window closes, before its state is saved. The controller
+    #: uses it for the one thing that has to be offered on the way out: LCSC
+    #: numbers changed this session live on the footprints only until "To
+    #: schematic" is pressed, and a *removal* lives nowhere else at all. The
+    #: close is not cancellable from here — the offer is a question, not a veto.
+    about_to_close = Signal()
 
     def __init__(self, board: Board, settings=None, parts=None, parent=None) -> None:
         super().__init__(parent)
@@ -838,7 +844,8 @@ class MainWindow(QMainWindow):
         self._store_setting("window", "main_geometry", encoded)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt override
-        """Save geometry and detach the log handler on the way out."""
+        """Offer the schematic export, then save geometry and detach the log."""
+        self.about_to_close.emit()
         self._save_geometry()
         self.log_pane.uninstall()
         super().closeEvent(event)
