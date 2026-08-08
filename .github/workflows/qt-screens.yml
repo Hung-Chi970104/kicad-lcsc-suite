@@ -39,8 +39,13 @@ jobs:
           python-version: "3.12"
 
       - name: Install the app's dependencies
+        # See the note on the `test` job: the hand-listed set drifted and this
+        # job had never once passed. `requests` arrives through `pip install
+        # -e .` — the Qt app reaches the legacy package's library.py through
+        # shared.py, and that module imports it at the top.
         run: |
           python -m pip install --upgrade pip
+          python -m pip install -e .
           python -m pip install "PySide6>=6.7,<7" "kicad-python>=0.4,<1" pytest
 
       - name: Install the libraries Qt's offscreen platform still needs
@@ -123,6 +128,7 @@ jobs:
       - name: Install the app's dependencies
         run: |
           python -m pip install --upgrade pip
+          python -m pip install -e .
           python -m pip install "PySide6>=6.7,<7" "kicad-python>=0.4,<1" pytest
 
       - name: Render every screen, light and dark
@@ -150,9 +156,16 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install test dependencies
+        # `pip install -e .` rather than a hand-listed set. The hand-listed one
+        # drifted: tests/test_componentdb.py reaches into db_build, whose
+        # jlcapi imports cachetools, and this job had been failing on that since
+        # the Phase 2 commit without anybody noticing — which means CI was not a
+        # gate at all for six phases. pyproject already declares what db_build
+        # needs, so the list cannot drift again if it is not a list.
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest ruff==0.14.14 "PySide6>=6.7,<7" requests
+          python -m pip install -e .
+          python -m pip install pytest ruff==0.14.14 "PySide6>=6.7,<7"
       - name: pytest
         # Nothing under tests/ imports wx, so the whole suite runs on a bare
         # Python — it is the safety net for the logic half through every phase.
