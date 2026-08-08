@@ -34,10 +34,11 @@ from typing import Optional, Sequence
 
 from PySide6.QtCore import QObject
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from .export import Exporter, ExportResult
 from .kicad_bridge import sanitize_lcsc
+from .schematic import SchematicSync, SyncPlan, basenames
 from .search_source import build_source
 from .shared import fab_rules, highlight_terms
 from .ui.assign_dialog import AssignNumberDialog, describe
@@ -52,6 +53,7 @@ from .ui.explorer import ExplorerWindow
 from .ui.main_window import MainWindow
 from .ui.mappings_dialog import MappingsDialog
 from .ui.part_details_dialog import PartDetailsDialog
+from .ui.schematic_dialog import SchematicSyncDialog, nothing_to_do_message
 from .ui.settings_dialog import SettingsDialog
 from .undo import UndoStack
 
@@ -132,15 +134,18 @@ class SuiteController(QObject):
             if parts is not None
             else None
         )
-        #: References whose number this session *removed*. Phase 7's "To
-        #: schematic" needs them: a reference merely blank in the store may be
-        #: one the schematic has and the board never picked up, and exporting
-        #: those two states alike would wipe numbers the user never touched.
+        #: References whose number this session *removed*. "To schematic" needs
+        #: them: a reference merely blank in the store may be one the schematic
+        #: has and the board never picked up, and exporting those two states
+        #: alike would wipe numbers the user never touched.
         self.schematic_cleared_refs: set[str] = set()
         #: Set when an assignment changes and no schematic sync has run since.
-        #: Phase 7 reads it; nothing here acts on it, because board<->schematic
-        #: sync is never automatic.
+        #: Read on the way out, and *only* to ask — board<->schematic sync is
+        #: never automatic. See :meth:`offer_schematic_export`.
         self.schematic_sync_pending = False
+        #: Where the two directions get their files, their assignments and
+        #: their previews. See :mod:`lcsc_suite.schematic`.
+        self.schematic = SchematicSync(board, parts) if parts is not None else None
         #: Reversible actions, most recent last. See :mod:`lcsc_suite.undo` for
         #: why KiCad's own undo history is not enough on its own.
         self.undo_stack = UndoStack()
@@ -181,6 +186,12 @@ class SuiteController(QObject):
         window.toggle_pos_action.triggered.connect(
             lambda: self.toggle_exclusions(pos=True)
         )
+
+        # Phase 7's two, and they stay two. Each writes to a place the other
+        # half of the toolchain owns, so neither is ever run for the user.
+        window.export_schematic_action.triggered.connect(self.export_to_schematic)
+        window.import_schematic_action.triggered.connect(self.import_from_schematic)
+        window.about_to_close.connect(self.offer_schematic_export)
 
         # Phase 5's five windows.
         window.settings_action.triggered.connect(self.open_settings)
@@ -353,17 +364,32 @@ class SuiteController(QObject):
             return
         self.assign_number(references, dialog.number())
 
-    def assign_number(self, references: Sequence[str], number: str, stock=None) -> None:
+    def assign_number(
+        self,
+        references: Sequence[str],
+        number: str,
+        stock=None,
+        reload: bool = True,
+    ) -> list:
         """Assign one number to ``references`` and refresh the list.
 
         The single funnel every source of a number goes through — this dialog,
-        ``Paste LCSC``, ``Find mapping``, and the Explorer in Phase 4. Keeping
-        one funnel is what stops the store, the board and the schematic-cleared
-        set drifting apart per entry point, which is how the wx plugin ended up
-        with the same eight lines written four times.
+        ``Paste LCSC``, ``Find mapping``, the Explorer in Phase 4 and the
+        schematic import in Phase 7. Keeping one funnel is what stops the store,
+        the board and the schematic-cleared set drifting apart per entry point,
+        which is how the wx plugin ended up with the same eight lines written
+        four times.
+
+        ``reload=False`` is for a caller making many of these in a row: the list
+        rebuild costs a full board read, and a schematic import of sixty
+        distinct numbers would otherwise pay for it sixty times to show the same
+        final state. Such a caller reloads once when it is done.
+
+        Returns the references actually written, which is the subset that exists
+        on the board.
         """
         if not references or not number:
-            return
+            return []
         # Read before the write: this is what Undo has to put back, and after the
         # write the old numbers and stock figures are gone from both halves.
         before = self.parts.lcsc_state(references)
@@ -372,13 +398,13 @@ class SuiteController(QObject):
             written = self.parts.assign(references, number, stock=stock)
         except ValueError as exc:
             self._warn("Assign LCSC number", str(exc))
-            return
+            return []
         except Exception as exc:  # noqa: BLE001 - report it, keep the window up
             log.exception("Could not assign %s", number)
             self._failed_write(f"assign {number}", exc)
-            return
+            return []
         if not written:
-            return
+            return []
         self.schematic_cleared_refs.difference_update(written)
         self.schematic_sync_pending = True
         log.info("Assigned %s to %s", number, describe(written))
@@ -389,7 +415,9 @@ class SuiteController(QObject):
                 cleared.intersection(written),
             ),
         )
-        self.window.reload_parts()
+        if reload:
+            self.window.reload_parts()
+        return written
 
     def remove(self, *_) -> None:
         """Clear the LCSC number from the selected footprints."""
@@ -949,6 +977,221 @@ class SuiteController(QObject):
                 + result.warnings
             )
         return box
+
+    # -- board <-> schematic (Phase 7) --------------------------------------
+    #
+    # Two buttons, and the rule they exist for: **sync is never automatic.**
+    # Both directions overwrite a field in a file the other half of the
+    # toolchain owns, and the side being overwritten may be the only place a
+    # number exists. Nothing here is called from the assignment path, from a
+    # timer or from a reload; each method starts at a button and shows what it
+    # would destroy before destroying it.
+
+    def export_to_schematic(self, *_) -> Optional[SyncPlan]:
+        """Write the assigned LCSC numbers into the schematic symbols.
+
+        Without this the numbers live only on the footprints, where the Symbol
+        Fields Table cannot see them and where the next "Update PCB from
+        Schematic" overwrites them.
+        """
+        if self.schematic is None:
+            return None
+        paths = self._schematic_paths("To schematic")
+        if not paths:
+            return None
+        try:
+            plan = self.schematic.plan_export(paths, self.schematic_cleared_refs)
+        except OSError as exc:
+            log.exception("Could not read the schematic")
+            self._warn("To schematic", f"The schematic could not be read:\n\n{exc}")
+            return None
+
+        skip_locked = True
+        if plan.locked and not self._confirm_write_under_editor(plan):
+            return None
+        if plan.locked:
+            skip_locked = False
+        if not self._confirm(plan):
+            return None
+
+        try:
+            result = self.schematic.write(plan, skip_locked=skip_locked)
+        except Exception as exc:  # noqa: BLE001 - a failed sync must not kill the window
+            log.exception("Writing LCSC numbers to the schematic failed")
+            self._warn("To schematic", f"The schematic could not be updated:\n\n{exc}")
+            return None
+
+        if not result.skipped_locked:
+            # Only now: until the numbers are in the file, a removal this
+            # session made exists nowhere else, and forgetting it would leave
+            # the schematic holding a number the user deliberately took off.
+            self.schematic_cleared_refs.clear()
+            self.schematic_sync_pending = False
+        log.info(result.summary())
+        QMessageBox.information(self.window, "To schematic", result.summary())
+        return plan
+
+    def import_from_schematic(self, *_) -> Optional[SyncPlan]:
+        """Copy the LCSC numbers in the schematic symbols onto the board.
+
+        The direction that is routinely the useful one. A schematic is often
+        ahead of the board — fields filled in eeschema, or a design that shipped
+        with them — and a plugin that only reads footprints reports every one of
+        those boards as completely unassigned.
+        """
+        if self.schematic is None:
+            return None
+        paths = self._schematic_paths("From schematic")
+        if not paths:
+            return None
+        try:
+            plan = self.schematic.plan_import(paths)
+        except OSError as exc:
+            log.exception("Reading LCSC numbers from the schematic failed")
+            self._warn("From schematic", f"The schematic could not be read:\n\n{exc}")
+            return None
+
+        if not plan.read:
+            self._warn(
+                "From schematic",
+                "No schematic could be read:\n\n" + basenames(plan.missing or paths),
+            )
+            return None
+        if not self._confirm(plan):
+            return None
+
+        written = self._apply_schematic_numbers(plan.payload)
+        QMessageBox.information(
+            self.window,
+            "From schematic",
+            f"{len(written)} footprint(s) updated from the schematic.\n\n"
+            "Save the PCB in KiCad to keep the change.",
+        )
+        return plan
+
+    def _apply_schematic_numbers(self, numbers: dict) -> list:
+        """Write imported numbers through the funnel, one commit per number.
+
+        ``assign_number`` rather than a write of its own: it is the single place
+        the board, the project database, the cleared set and the undo history
+        are kept in step, and a second write path here is exactly how the wx
+        plugin ended up with the same eight lines in four places. Grouped so the
+        whole import is one Undo press — it is one thing the user did — and one
+        list rebuild, not one per distinct number.
+        """
+        # Restored afterwards, because an import does not create a divergence:
+        # the two sides now agree about everything it touched. What it must not
+        # do is *clear* a flag set by edits made before it, which is why this is
+        # a restore rather than a `= False`.
+        pending = self.schematic_sync_pending
+        by_number: dict = {}
+        for reference, number in numbers.items():
+            by_number.setdefault(number, []).append(reference)
+        written: list = []
+        with self._grouped(f"import {len(numbers)} number(s) from the schematic"):
+            for number, references in sorted(by_number.items()):
+                written.extend(
+                    self.assign_number(sorted(references), number, reload=False)
+                )
+        self.schematic_sync_pending = pending
+        self.window.reload_parts()
+        log.info("Imported %d LCSC number(s) from the schematic", len(written))
+        return written
+
+    def _schematic_paths(self, title: str) -> list:
+        """Return the sheets to act on, asking the user only when unclear.
+
+        One path is normally the whole hierarchy — the sub-sheets are found by
+        following the root's ``Sheetfile`` properties — so the file dialog only
+        appears for a project whose root cannot be identified at all.
+        """
+        paths = self.schematic.default_paths()
+        if paths:
+            return paths
+        info = self.board.info()
+        chosen, _filter = QFileDialog.getOpenFileNames(
+            self.window,
+            f"{title}: choose the schematic",
+            info.project_path,
+            "KiCad schematics (*.kicad_sch)",
+        )
+        return list(chosen)
+
+    def build_confirmation(self, plan: SyncPlan) -> SchematicSyncDialog:
+        """Build the dialog that shows what ``plan`` would overwrite.
+
+        Split from :meth:`_confirm` for the reason Phase 5 split every other
+        dialog and Phase 6 split ``build_export_report``: ``exec()`` never
+        returns to a probe or a test, so the half that *builds* the warning has
+        to be reachable without it. This warning is the entire visible half of
+        Phase 7, and a dialog that can only be reached through a modal is one
+        that can never be screenshotted.
+        """
+        return SchematicSyncDialog(self.window, plan)
+
+    def _confirm(self, plan: SyncPlan) -> bool:
+        """Show what ``plan`` would overwrite and ask whether to go ahead."""
+        log.info(plan.summary())
+        if not plan.has_work():
+            QMessageBox.information(
+                self.window, plan.title, nothing_to_do_message(plan)
+            )
+            return False
+        return (
+            self.build_confirmation(plan).exec()
+            == SchematicSyncDialog.DialogCode.Accepted
+        )
+
+    def _confirm_write_under_editor(self, plan: SyncPlan) -> bool:
+        """Ask before writing to a sheet the Schematic Editor has open.
+
+        Its own question rather than a line in the main confirmation, because
+        the answer is usually "close eeschema and press it again": the editor
+        holds the whole document in memory and saving there throws away
+        everything written underneath it.
+        """
+        answer = QMessageBox.warning(
+            self.window,
+            plan.title,
+            "The schematic is open in the KiCad Schematic Editor:\n\n"
+            f"{basenames(plan.locked)}\n\n"
+            "The editor holds its own copy, so anything written now is lost as "
+            "soon as you save there. Close the Schematic Editor and try again."
+            "\n\nWrite to the file anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def offer_schematic_export(self, *_) -> None:
+        """Last chance to get this session's changes into the schematic.
+
+        Nothing is written without being asked — that is the whole point of the
+        two buttons. But a *removal* lives only on the footprint until it is
+        exported (see ``schematic_cleared_refs``), so closing on unexported
+        changes loses it silently. Ask rather than let that happen quietly.
+
+        Silent when there is nothing pending, and silent when the project has no
+        schematic this could be written to: a question whose only honest answer
+        is "there is nowhere to put them" is not worth interrupting a close for.
+        """
+        if not self.schematic_sync_pending or self.schematic is None:
+            return
+        if not self.schematic.default_paths():
+            log.debug("No schematic for this project, so nothing to offer on close")
+            return
+        answer = QMessageBox.question(
+            self.window,
+            "To schematic",
+            "The LCSC numbers you changed here are on the footprints only. The "
+            "Symbol Fields Table, the schematic BOM and the next 'Update PCB "
+            "from Schematic' all read the symbols instead, so they will not see "
+            "them.\n\nWrite them into the schematic now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.export_to_schematic()
 
     # -- reporting ----------------------------------------------------------
 

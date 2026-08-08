@@ -634,6 +634,145 @@ def screen_export_summary(context) -> QWidget:
 
 #: name -> builder. Grows one entry per phase; ``--all`` renders every one, so
 #: adding a screen here is what puts it under CI.
+# ---------------------------------------------------------------------------
+# Board <-> schematic (Phase 7)
+#
+# These two are the only screens that need a *second* fixture file: a schematic
+# whose LCSC fields disagree with the board's in every way the warning has to
+# report. It is written next to the relocated fixture project rather than
+# committed, because what makes the picture worth looking at is that the two
+# sides disagree — and the disagreement has to be built from whatever the board
+# fixture currently says, not frozen against a copy of it that can drift.
+#
+# The symbol template is a deliberate second copy of the one in
+# ``tests/test_schematic_sync.py``. That one is asserted against and is the
+# parser's specification; this one exists to make a picture, and a probe script
+# importing a test module to draw one would be the wrong dependency.
+# ---------------------------------------------------------------------------
+
+
+def _symbol(reference: str, lcsc=None) -> str:
+    """Build one KiCad 8+ symbol instance, optionally carrying an LCSC field."""
+    field = ""
+    if lcsc is not None:
+        field = f'\t\t(property "LCSC" "{lcsc}"\n\t\t\t(at 10.16 20.32 0)\n\t\t)\n'
+    return (
+        "\t(symbol\n"
+        '\t\t(lib_id "Device:C")\n'
+        f'\t\t(property "Reference" "{reference}"\n\t\t\t(at 12.7 17.78 0)\n\t\t)\n'
+        f'\t\t(property "Value" "10uF"\n\t\t\t(at 12.7 20.32 0)\n\t\t)\n'
+        f"{field}\t)\n"
+    )
+
+
+def _write_schematic(board, symbols) -> list:
+    """Write a root sheet into the board's project and return its path.
+
+    Named after the board, which is the first place ``find_root_schematic``
+    looks — so the app finds it exactly as it would find a real one, and the
+    screens exercise the lookup rather than being handed a path.
+    """
+    info = board.info()
+    path = os.path.join(info.project_path, f"{info.name.split('.')[0]}.kicad_sch")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(
+            '(kicad_sch\n\t(version 20260306)\n\t(generator "eeschema")\n'
+            + "".join(symbols)
+            + ")\n"
+        )
+    return [path]
+
+
+def _diverging_schematic(controller, divergences: dict, omit=(), extra=()) -> list:
+    """Write a schematic that agrees with the board except where told to differ.
+
+    **Starting from agreement is the point.** A schematic built only from the
+    handful of rows a screen wants to show is a schematic missing 100 symbols,
+    and every one of those is a legitimate "no symbol for this reference" the
+    dialog then reports — so the first attempt at this screen showed "85
+    skipped" and buried the eight rows worth looking at. A real project's
+    schematic has a symbol for every footprint; the fixture's must too.
+
+    ``divergences`` maps a reference to the number its *symbol* should carry,
+    ``None`` meaning "a symbol with no LCSC field at all". Anything not named
+    gets the number the board already has. ``omit`` leaves a reference out of
+    the file entirely and ``extra`` adds symbols the board has no footprint for
+    — the two ways the sides can fail to line up at all.
+    """
+    symbols = []
+    for row in controller.window.part_model.rows():
+        if row.reference in omit:
+            continue
+        if row.reference in divergences:
+            symbols.append(_symbol(row.reference, divergences[row.reference]))
+        else:
+            symbols.append(_symbol(row.reference, row.lcsc or None))
+    symbols += [_symbol(reference, lcsc) for reference, lcsc in extra]
+    return _write_schematic(controller.board, symbols)
+
+
+def screen_schematic_export(context) -> QWidget:
+    """Build the `To schematic` warning over a schematic that disagrees.
+
+    Every category the dialog can report is present on purpose, because the
+    categories are the whole content: an addition is free, a REPLACED row
+    destroys a number somebody chose, a cleared row removes one outright, and a
+    skipped reference cannot be written at all. A screenshot showing only
+    additions would prove nothing about the case the warning exists for.
+    """
+    controller = _controller(context)
+    rows = controller.window.part_model.rows()
+    assigned = [row for row in rows if row.assigned]
+    unassigned = [row for row in rows if not row.assigned]
+
+    divergences = {}
+    for row in assigned[:3]:
+        divergences[row.reference] = None  # no field yet: these gain one
+    for row in assigned[3:6]:
+        divergences[row.reference] = "C1"  # a different number: destructive
+    for row in unassigned[:2]:
+        # Blank on the board, numbered in the schematic — and cleared *here*,
+        # this session. That is the one state the cleared set exists to carry:
+        # without it these two are indistinguishable from a reference the board
+        # simply never picked up, and the export would leave them alone.
+        divergences[row.reference] = "C2"
+        controller.schematic_cleared_refs.add(row.reference)
+    # One assigned reference the schematic has no symbol for at all.
+    paths = _diverging_schematic(controller, divergences, omit={assigned[6].reference})
+
+    plan = controller.schematic.plan_export(paths, controller.schematic_cleared_refs)
+    dialog = controller.build_confirmation(plan)
+    dialog.show()
+    settle(200)
+    return dialog
+
+
+def screen_schematic_import(context) -> QWidget:
+    """Build the `From schematic` warning — the direction usually worth pressing.
+
+    A schematic is routinely ahead of the board: fields filled in eeschema, or a
+    design that shipped with them, on a board whose footprints carry nothing.
+    The mirror of the other screen's caveat applies — a symbol whose reference
+    is not on this board cannot be imported, and saying so is the difference
+    between "nothing happened" and "nothing happened, and here is why".
+    """
+    controller = _controller(context)
+    rows = controller.window.part_model.rows()
+    assigned = [row for row in rows if row.assigned]
+    unassigned = [row for row in rows if not row.assigned]
+
+    divergences = {row.reference: "C15195" for row in unassigned[:4]}
+    divergences.update({row.reference: "C1524" for row in assigned[:3]})
+    # X99 is a symbol for a part that is not on this board at all — the import
+    # cannot invent a footprint for it, so it can only be reported.
+    paths = _diverging_schematic(controller, divergences, extra=[("X99", "C60133")])
+
+    dialog = controller.build_confirmation(controller.schematic.plan_import(paths))
+    dialog.show()
+    settle(200)
+    return dialog
+
+
 SCREENS = {
     "assign-dialog": screen_assign_dialog,
     "corrections": screen_corrections,
@@ -651,6 +790,8 @@ SCREENS = {
     "mappings": screen_mappings,
     "part-details": screen_part_details,
     "photo-viewer": screen_photo_viewer,
+    "schematic-export": screen_schematic_export,
+    "schematic-import": screen_schematic_import,
     "settings": screen_settings,
 }
 

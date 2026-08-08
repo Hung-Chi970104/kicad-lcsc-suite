@@ -1646,25 +1646,115 @@ walks the whole crash path — inline, expand, switch inventory, expand a
 different part — because a pane that did not survive cannot be photographed.
 763 → 773 tests.
 
-### Resume here → Phase 7
+### Phase 7 — Schematic sync ✅
+
+The two toolbar buttons have been there since Phase 1 and connected to nothing.
+They work now, and §6 was right about the cheap part: `schematicexport.py` and
+`schematicimport.py` port **unchanged**. Neither imports `wx`, both parse
+`.kicad_sch` as text, and Phase 0's `load_schematic(paths, version=...)` argument
+was added for exactly this — out of process there is no `pcbnew.GetBuildVersion()`
+to pick the v6/v7/v8+ writer branch, so the version comes over IPC instead.
+
+| Module | What it owns |
+|---|---|
+| `kicad_lcsc_suite/schematicexport.py`, `schematicimport.py` | the file format, ported as-is |
+| `lcsc_suite/schematic.py` | `SchematicSync`: which sheets, whose numbers, and `SyncPlan` — what each direction *would* do |
+| `lcsc_suite/ui/schematic_dialog.py` | the one warning dialog both directions use |
+| `SuiteController.export_to_schematic` / `.import_from_schematic` | the two buttons, and nothing else calls them |
+
+Screens: **`schematic-export`** and **`schematic-import`**, both appearances.
+Tests: `tests/test_qt_schematic.py` (33). 773 → 806 overall.
+
+#### What the cleared set was for, finally
+
+`schematic_cleared_refs` has been maintained since Phase 3 and read by nobody.
+This is its one consumer, and the reason it could not be derived later is worth
+restating: **a reference blank because nothing ever assigned it and one blank
+because the user removed a number are the same row in the database.** The first
+must be left alone — a schematic that has a number for it is *ahead* of the
+board, and wiping it destroys the only copy. The second must be exported as a
+clear, or the removal exists nowhere but this session's memory.
+
+`test_a_merely_blank_reference_is_left_alone` and
+`test_a_deliberately_cleared_reference_is_exported_as_a_clear` are the same
+schematic and the same board, differing only in whether the reference is in that
+set. `schematic_sync_pending` is the other half: it is what makes the close ask
+rather than silently discard a removal, and it is **never** a trigger to write.
+
+#### The warning shows every row, not eight of them
+
+The wx dialog was a `wx.MessageBox` of assembled text capped at eight references
+per category, ending "... and 23 more" — the sentence a user reads immediately
+before pressing Yes on twenty-three changes they were not shown. The categories
+and the emphasis carry over; the sample does not. A `QTableWidget` lists all of
+them, REPLACED rows in the palette's `bad` and cleared rows in amber, and the
+count of replacements leads the summary line because it is the only category
+that destroys something somebody chose.
+
+One dialog serves both directions, with the nouns in `schematic.DIRECTIONS`. Two
+subclasses would have let a wording fix reach one direction and not the other,
+which is the failure that matters in a warning.
+
+#### The import goes through the funnel, and is one Undo press
+
+`_apply_schematic_numbers` calls `assign_number` per distinct number rather than
+writing itself — same rule as `Find mapping`, and the reason the wx plugin's four
+entry points drifted. Two things came out of doing it that way:
+
+- `assign_number` grew `reload=False` and a return value. Sixty distinct numbers
+  meant sixty full board reads to show one final state; the caller reloads once.
+- **`schematic_sync_pending` is restored around the import, not set.**
+  `assign_number` sets it, correctly — every other caller has just diverged from
+  the schematic. The import is the one caller that has done the opposite, and
+  leaving the flag up would make the close offer to export a board that already
+  agrees. Restored rather than cleared, so edits made *before* the import are
+  still pending after it.
+
+#### Two things the probe found that no test would have
+
+1. **The first `schematic-export` render said "85 skipped".** The screen built a
+   schematic out of only the rows it wanted to show, so the other 85 assigned
+   references legitimately had no symbol — the dialog was correct and the picture
+   was useless. `_diverging_schematic` now starts from a schematic that *agrees*
+   with the board and diverges only where the screen asks, which is what a real
+   project's schematic looks like.
+2. **The lead sentence did not survive being read.** Composing it from
+   per-direction nouns produced "Numbers only the schematic symbols has are left
+   alone", and it claimed everything listed was "replaced" while the table also
+   held Added and Skipped rows. Each direction states its own sentence now.
+
+#### Known limitations, stated rather than skipped
+
+- **Sub-sheet hierarchies are followed but not tested here.** `read_schematic`
+  and the writers do it and `tests/test_schematic_import.py` covers it; nothing
+  in this phase's own tests uses a multi-sheet project, because what this phase
+  added sits above the file walk.
+- **The file dialog fallback is untested.** `_schematic_paths` opens
+  `QFileDialog` when the root cannot be identified, and a modal file chooser is
+  not something the offscreen probe can answer. The path that matters — a project
+  whose root *is* found — is covered.
+- **Windows verification still not run**, for any phase.
+- **`live_ipc_check.py` was not re-run.** No write path through the bridge
+  changed; the schematic is a file, not the board.
+
+### Resume here → Phase 8
 
 Read this whole §10, then `git log --oneline` for the phase commits. Every screen
-in `docs/screens/` is current, and Phases 0–6 are done.
+in `docs/screens/` is current, and **Phases 0–7 are done**.
 
-**Phase 7 is schematic sync** (§6): `schematicexport.py` and `schematicimport.py`
-already parse `.kicad_sch` directly and port unchanged — Phase 0 already gave
-`load_schematic` the optional `version` argument it needs, and the app has the
-KiCad version over IPC. Only the two buttons and their warning dialogs are new.
+**Phase 8 is the parity gate, then the cutover** (§6):
 
-**The rule that governs the whole phase is in the memory and in §5.1: board↔
-schematic sync is never automatic.** Two explicit buttons, each warning about
-what it overwrites.
+- side-by-side screenshot review of every screen against the wx original;
+- the same board through both versions — the BOM and CPL byte-comparison is
+  already done and recorded above, so what remains is the rest of the screens;
+- **Windows verification**, which has never been run and is the one claim this
+  migration rests on that has no evidence behind it yet (§7);
+- only then remove the wx plugin and the `install.sh` symlink path.
 
-Waiting for it since Phase 3: **`schematic_cleared_refs` and
-`schematic_sync_pending` are maintained but read by nobody.** They are tracked
-from the assignment path because only it knows a removal happened, and the
-distinction they carry — a reference *deliberately cleared* versus one merely
-blank — cannot be reconstructed later. `To schematic` is what consumes them.
+Nothing in Phases 0–7 is waiting on anything. The unfinished items are the three
+"known limitations" lists in this §10 — none of them blocks the gate, and all of
+them should be read before the wx plugin is deleted, because deleting it is what
+makes them permanent.
 
 House rules that have been followed so far and should keep being followed:
 
