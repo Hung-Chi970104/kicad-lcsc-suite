@@ -99,6 +99,51 @@ class StubParent(wx.Dialog):
         self._part_selector = None
 
 
+#: Where ``--shot`` writes, or ``None`` when it was not asked for. Module level
+#: because the capture happens deep inside each probe's ``inspect`` closure,
+#: several frames below the argument parsing, and threading a directory through
+#: every one of them would touch signatures that exist for other reasons.
+SHOT_DIR = None
+
+
+def capture(window, name: str) -> None:
+    """Screenshot *window* into ``SHOT_DIR``, if one was asked for.
+
+    This is what the Phase 8 parity gate compares the Qt screens against, and
+    it is the reason the plan could ask for a side-by-side review at all: §5's
+    UI inventory is prose, and no wx screenshot was ever committed.
+
+    ``wx.WindowDC`` reads the window's own drawing surface rather than the
+    screen, so this needs no Screen Recording permission — the file header's
+    warning about ``screencapture`` does not apply. The window does have to be
+    *shown* first, because an unshown window on macOS has nothing drawn in it
+    yet; every caller here already shows it.
+
+    Failures are reported and swallowed. A missing screenshot is worth knowing
+    about, but it is not worth turning a passing dialog build into a failure —
+    the build is what this script is primarily for.
+    """
+    if not SHOT_DIR:
+        return
+    try:
+        window.Refresh()
+        window.Update()
+        wx.Yield()
+        size = window.GetSize()
+        bitmap = wx.Bitmap(size.width, size.height)
+        memory = wx.MemoryDC(bitmap)
+        memory.Blit(0, 0, size.width, size.height, wx.WindowDC(window), 0, 0)
+        memory.SelectObject(wx.NullBitmap)
+        os.makedirs(SHOT_DIR, exist_ok=True)
+        target = os.path.join(SHOT_DIR, f"{name}.png")
+        if bitmap.SaveFile(target, wx.BITMAP_TYPE_PNG):
+            print(f"shot: {name} {size.width}x{size.height} -> {target}")
+        else:
+            print(f"shot: {name} FAILED to encode")
+    except Exception as exc:  # noqa: BLE001 - a missing shot must not fail a build
+        print(f"shot: {name} FAILED: {exc}")
+
+
 def dump_tree(win, depth: int = 0) -> None:
     """Print the window tree with each widget's realised rectangle."""
     rect = win.GetRect()
@@ -206,6 +251,7 @@ def probe_explorer(parent, keyword: str, offline_facets: bool):
         # here would leave the dialog on screen and the main loop running, which
         # is not a test failure, it is a hang.
         try:
+            capture(dialog, "wx-explorer")
             print("--- explorer geometry ---")
             dump_tree(dialog)
             dump_columns(dialog.results, "results")
@@ -753,6 +799,47 @@ def _lcsc_fields(path):
         ]
 
 
+#: The three dialogs the Phase 8 parity gate needs a wx picture of and that
+#: nothing else here builds. Each takes the main window plus one argument, and
+#: none of them touches the network on construction.
+#:
+#: They are built *only* when ``--shot`` is given. This script's day job is
+#: proving a dialog survives a wx layout pass, and adding three more dialogs to
+#: every run would slow the check it exists for in order to serve a gate that
+#: runs once a phase.
+EXTRA_DIALOGS = (
+    ("wx-corrections", "corrections", "CorrectionManagerDialog", "R_0402_1005Metric"),
+    ("wx-mappings", "partmapper", "PartMapperManagerDialog", None),
+    ("wx-part-details", "partdetails", "PartDetailsDialog", "C25741"),
+)
+
+
+def capture_dialogs(parent) -> None:
+    """Build and screenshot the dialogs no other check here opens.
+
+    Each is imported at call time rather than at the top of the file, because
+    two of them are among the four upstream modules ``ruff format`` still wants
+    to rewrite and importing them unconditionally would drag that into every
+    run of this script.
+    """
+    if not SHOT_DIR:
+        return
+    import importlib
+
+    for name, module_name, class_name, argument in EXTRA_DIALOGS:
+        try:
+            module = importlib.import_module(f"kicad_lcsc_suite.{module_name}")
+            factory = getattr(module, class_name)
+            dialog = factory(parent) if argument is None else factory(parent, argument)
+            dialog.Show()
+            wx.Yield()
+            capture(dialog, name)
+            dialog.Destroy()
+            wx.Yield()
+        except Exception as exc:  # noqa: BLE001 - one dialog must not stop the rest
+            print(f"shot: {name} FAILED to build: {exc}")
+
+
 def probe_mainwindow(project_path: str):
     """Build the main window against the standalone stubs and exercise it.
 
@@ -800,8 +887,10 @@ def probe_mainwindow(project_path: str):
     settings = SettingsDialog(dialog)
     settings.Show()
     wx.Yield()
+    capture(settings, "wx-settings")
     settings.Destroy()
     wx.Yield()
+    capture_dialogs(dialog)
 
     print("--- schematic buttons ---")
     # Both live on the upper toolbar. On the right-hand one they were off the
@@ -901,6 +990,7 @@ def probe_mainwindow(project_path: str):
 
     def inspect():
         try:
+            capture(dialog, "wx-mainwindow")
             print("--- single window ---")
             # Closing with unexported changes puts up a modal question, which
             # nothing can answer headlessly. The point here is the teardown, so
@@ -961,7 +1051,17 @@ def main() -> int:
         default=os.getcwd(),
         help="stand-in for the board's project directory",
     )
+    parser.add_argument(
+        "--shot",
+        metavar="DIR",
+        help=(
+            "also screenshot the dialog into DIR. This is how the wx originals "
+            "for the Phase 8 parity gate were captured; see docs/screens/wx/."
+        ),
+    )
     args = parser.parse_args()
+    global SHOT_DIR
+    SHOT_DIR = args.shot
 
     app = wx.App(False)
     probe_explorer.failed = False

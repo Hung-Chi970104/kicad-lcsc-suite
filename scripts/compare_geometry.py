@@ -44,6 +44,14 @@ import argparse
 import re
 import sys
 
+# Windows consoles default to cp1252, which cannot encode the Δ this report is
+# written in — the first Windows run died on `UnicodeEncodeError` *after* doing
+# all the work, which is the most annoying possible place to fail. Reconfigure
+# rather than dropping the character: a report about pixel deltas should be
+# allowed to say "delta".
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 #: ``ClassName#objectName 100x20@4,8 'text' [hidden]`` — the line ``dump_tree``
 #: writes. The geometry is the only part this needs to pull out separately;
 #: everything else is identity and is compared as text.
