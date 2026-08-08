@@ -225,10 +225,18 @@ class ResultsModel(QAbstractTableModel):
         ``_inline_placed`` all exist to keep an overlay glued to rows it is not
         part of. Here the row scrolls because it is a row.
         """
-        self.clear_inline_row()
-        if after < 0:
+        if after < 0 or after == self._inline_row:
+            self.clear_inline_row()
             return
-        target = after + 1
+        # ``after`` is a display row, and clearing the old placeholder renumbers
+        # every row under it. Translated to an index into ``_hits`` first, so
+        # that a placeholder sitting above the new anchor does not push the pane
+        # one part further down the grid.
+        anchor = after - (1 if 0 <= self._inline_row < after else 0)
+        self.clear_inline_row()
+        if anchor >= len(self._hits):
+            return
+        target = anchor + 1
         self.beginInsertRows(QModelIndex(), target, target)
         self._inline_row = target
         self.endInsertRows()

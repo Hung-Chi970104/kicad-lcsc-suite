@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Optional
 import webbrowser
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -155,6 +155,15 @@ class ExplorerWindow(QDialog):
         self._photo_viewer: Optional[PhotoViewer] = None
         self._detail_layout = self._setting("explorer_detail_layout", "side")
         self._details_shown = False
+        #: The throwaway widget the grid owns while the pane is inline. Never
+        #: the pane itself — see ``_detach_inline``.
+        self._inline_host: Optional[QWidget] = None
+        #: Whether the gesture now in progress is what selected the current row.
+        #: Set by the selection change, cleared by the next press. See
+        #: ``eventFilter`` and ``_on_cell_clicked``.
+        self._selected_by_this_press = False
+        #: True while the pane is being moved. See ``_set_details_shown``.
+        self._placing = False
 
         self.setWindowTitle("LCSC Explorer")
         self.resize(*DEFAULT_SIZE)
@@ -376,6 +385,8 @@ class ExplorerWindow(QDialog):
         self.results.selectionModel().selectionChanged.connect(self._on_row_selected)
         self.results.doubleClicked.connect(self._on_row_activated)
         self.results.clicked.connect(self._on_cell_clicked)
+        # Every press starts a fresh gesture. See ``eventFilter``.
+        self.results.viewport().installEventFilter(self)
         layout.addWidget(self.results, 1)
         return panel
 
@@ -806,10 +817,19 @@ class ExplorerWindow(QDialog):
             self.results.selectRow(row)
 
     def _on_row_selected(self, *_) -> None:
-        """Open the detail pane on the newly selected part and fill it."""
+        """Open the detail pane on the newly selected part and fill it.
+
+        Inserting or removing the inline placeholder renumbers the rows under
+        it, and the view answers that by re-emitting ``selectionChanged`` for a
+        selection nobody moved. Placing the pane therefore arrives back here
+        mid-placement; ``_placing`` is what tells the two apart.
+        """
+        if self._placing:
+            return
         hit = self.current_hit()
         if hit is None:
             return
+        self._selected_by_this_press = True  # the click to come must not close it
         self._tokens.detail += 1  # anything in flight is for the old row
         self._report = None
         self._update_actions()
@@ -837,24 +857,98 @@ class ExplorerWindow(QDialog):
         self._on_assign()
         self.close()
 
-    def _on_cell_clicked(self, index) -> None:
-        """Open the photo viewer when the click landed on a thumbnail.
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt override
+        """Start a fresh gesture on every press in the results viewport.
 
-        Clicking a picture means "show me that picture" on any row, so this runs
-        regardless of whether the row was already selected.
+        Qt delivers the press here before the view acts on it, which is the only
+        moment at which "was this row already the selected one?" can be asked.
+        The alternative — leaving the flag set until a click consumes it — gets
+        it wrong for a row reached with the arrow keys: the stale flag would eat
+        the first click on it, and the pane would need clicking twice to close.
         """
-        if index.column() != COLUMN_INDEX["photo"]:
-            return
+        if (
+            watched is self.results.viewport()
+            and event.type() == QEvent.Type.MouseButtonPress
+        ):
+            self._selected_by_this_press = False
+        return super().eventFilter(watched, event)
+
+    def _on_cell_clicked(self, index) -> None:
+        """Handle a click on a row, once the view has finished with it.
+
+        Two gestures land here. A click on a thumbnail means "show me that
+        picture" on any row, selected or not. A click anywhere else on the row
+        whose details are already open closes them again — the same second click
+        that collapses an expanded row in JLCPCB's parts library, and the only
+        way back to a full-height grid without picking some other part first.
+
+        ``clicked`` fires on release, *after* ``selectionChanged`` has already
+        opened the pane for a newly picked row, so without
+        ``_selected_by_this_press`` every first click would open the pane and
+        shut it again in the same gesture.
+        """
         hit = index.data(HIT_ROLE)
-        if hit is not None:
-            self.open_photo_viewer(hit)
+        if index.column() == COLUMN_INDEX["photo"]:
+            if hit is not None:
+                self.open_photo_viewer(hit)
+            return
+        current = self.current_hit()
+        if self._selected_by_this_press or hit is None or current is None:
+            return
+        if hit.lcsc != current.lcsc:
+            return
+        self._set_details_shown(not self._details_shown)
+
+    def _detach_inline(self) -> None:
+        """Take the pane back out of the grid, then drop the placeholder row.
+
+        **The order is the whole of this method.** ``setIndexWidget`` gives the
+        widget to the *view*, and the view deletes what it owns: on
+        ``setIndexWidget(index, None)``, on the row being removed, and on a model
+        reset. It called ``deleteLater`` on ``self.detail`` in all three cases,
+        so switching inventory, switching layout or merely clicking a second row
+        destroyed the pane — after which every path through here raised
+        ``Internal C++ object (DetailPane) already deleted``.
+
+        So the view never owns the pane. It owns a throwaway ``_inline_host``
+        that the pane sits inside, and the pane is reparented back to the
+        splitter *before* anything is allowed to delete the host.
+        """
+        self.detail.setParent(self._splitter)
+        self.detail.hide()
+        row = self.model.inline_row()
+        if row >= 0:
+            self.results.setSpan(row, 0, 1, 1)
+            self.results.setIndexWidget(self.model.index(row, 0), None)
+        self._inline_host = None
+        self.model.clear_inline_row()
 
     def _set_details_shown(self, shown: bool) -> None:
+        """Show or hide the detail pane, guarding against re-entry.
+
+        The guard is not defensive programming. ``beginRemoveRows`` reaches the
+        selection model before it returns, which re-emits ``selectionChanged``,
+        which lands in ``_on_row_selected`` and calls straight back into here —
+        and the inner call happily installed the pane in a *new* host that the
+        outer call then handed to ``setIndexWidget(index, None)``, deleting the
+        pane with the host it was still inside. That is the crash.
+        """
+        if self._placing:
+            return
+        self._placing = True
+        try:
+            self._place_details(shown)
+        finally:
+            self._placing = False
+
+    def _place_details(self, shown: bool) -> None:
         """Show or hide the detail pane, in whichever layout is selected."""
         self._details_shown = shown
+        # Unconditional, in both layouts: the pane comes out of the grid before
+        # anything else touches it. In ``side`` that is what puts it back in the
+        # splitter, and in ``below`` it is what stops the view deleting it.
+        self._detach_inline()
         if self._detail_layout == "side":
-            self.model.clear_inline_row()
-            self.detail.setParent(self._splitter)
             self._splitter.insertWidget(1, self.detail)
             self.detail.setVisible(shown)
             if shown:
@@ -869,13 +963,14 @@ class ExplorerWindow(QDialog):
             return
         # Inline: a real row in the model, spanned across every column, with the
         # pane set on it as an index widget. It scrolls because it is a row.
-        self.detail.setVisible(shown)
         if not shown:
-            self.model.clear_inline_row()
             return
+        # Read after the detach, never before: removing the old placeholder
+        # shifts every row under it up by one, and Qt renumbers the selection to
+        # match. Anchoring on the row index taken beforehand put the pane one
+        # part too low every time the previous placeholder sat above it.
         rows = self.results.selectionModel().selectedRows()
         if not rows:
-            self.model.clear_inline_row()
             return
         self.model.set_inline_row(rows[0].row())
         row = self.model.inline_row()
@@ -889,19 +984,19 @@ class ExplorerWindow(QDialog):
                 self.detail.sizeHint().height(),
             ),
         )
-        self.results.setIndexWidget(self.model.index(row, 0), self.detail)
+        self._inline_host = QWidget(self.results)
+        host_layout = QVBoxLayout(self._inline_host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        host_layout.addWidget(self.detail)
+        self.detail.setVisible(True)
+        self.results.setIndexWidget(self.model.index(row, 0), self._inline_host)
 
     def _on_detail_layout_changed(self, index: int) -> None:
         """Move the detail pane between the side panel and the inline row."""
         self._detail_layout = DETAIL_LAYOUTS[index][0]
         self._store("explorer_detail_layout", self._detail_layout)
-        # Taken out of whichever host it is in before the other claims it: an
-        # index widget is owned by the view, and leaving it there while the
-        # splitter also holds it is a double free waiting for a model reset.
-        self.results.setIndexWidget(
-            self.model.index(max(0, self.model.inline_row()), 0), None
-        )
-        self.model.clear_inline_row()
+        # Out of whichever host it is in before the other claims it.
+        self._detach_inline()
         self.detail.set_layout_mode(self._detail_layout)
         self._set_details_shown(self._details_shown)
 

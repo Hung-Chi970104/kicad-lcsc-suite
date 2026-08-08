@@ -30,11 +30,13 @@ import os
 from pathlib import Path
 
 import pytest
+import shiboken6
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.fonts=false")
 
 from PySide6.QtCore import QEventLoop, Qt, QTimer  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from lcsc_suite import app as app_module, kicad_bridge  # noqa: E402
@@ -584,6 +586,221 @@ def test_switching_to_inline_moves_the_pane_into_the_grid(tmp_path, source):
     settle(400)
     assert window.model.inline_row() == -1
     assert window.model.rowCount() == 100
+    window.close()
+
+
+# ---------------------------------------------------------------------------
+# The detail pane outlives the grid it sits in
+#
+# Four bugs, one cause. ``setIndexWidget`` hands the widget to the *view*, and
+# the view deletes what it owns — on ``setIndexWidget(…, None)``, on the row
+# being removed, and on a model reset. Every one of those fired on the pane
+# itself, so switching inventory, switching layout or clicking a second row
+# destroyed it; what the user saw was a pane that would not reopen, and, in the
+# inline layout, a segfault as the view painted through the dangling pointer.
+#
+# ``shiboken6.isValid`` is the assertion that matters here: a deleted C++ object
+# leaves a live Python wrapper behind, so anything phrased in terms of
+# visibility passes right up until it raises.
+# ---------------------------------------------------------------------------
+
+
+def _inline_window(tmp_path, source, row: int = 0) -> ExplorerWindow:
+    """Build an Explorer in the inline layout with ``row``'s details open."""
+    window = make_window(tmp_path, source)
+    window.detail_layout_choice.setCurrentIndex(1)
+    window.select_row(row)
+    settle(400)
+    assert window.model.inline_row() >= 0, "the inline row never appeared"
+    return window
+
+
+def test_switching_inventory_keeps_the_inline_pane_alive(tmp_path, source):
+    """Bug 1: JLC → LCSC retail with the row expanded deleted the pane.
+
+    ``apply_filters`` closes the pane and repopulates the grid, and closing it
+    used to be the row removal that took the pane with it. The window then held
+    a destroyed widget, so no later click could open anything.
+    """
+    window = _inline_window(tmp_path, source)
+    window.inventory.setCurrentIndex(1)
+    settle(400)
+    assert shiboken6.isValid(window.detail)
+    assert window.model.inline_row() == -1  # closed, as a repopulate should
+
+    window.select_row(2)
+    settle(400)
+    assert shiboken6.isValid(window.detail)
+    assert window.model.inline_row() >= 0
+    assert window.detail.isVisible()
+    window.close()
+
+
+def test_switching_to_the_side_panel_keeps_the_pane_alive(tmp_path, source):
+    """Bug 2: the layout combo took the pane out by deleting it.
+
+    ``setIndexWidget(index, None)`` calls ``deleteLater`` on what it displaces,
+    so the "take it out of one host before the other claims it" line did exactly
+    what it was written to prevent.
+    """
+    window = _inline_window(tmp_path, source)
+    window.detail_layout_choice.setCurrentIndex(0)
+    settle(400)
+    assert shiboken6.isValid(window.detail)
+
+    window.select_row(3)
+    settle(400)
+    assert window.detail.isVisible()
+    assert window.detail.parent() is window._splitter
+    window.close()
+
+
+def test_a_second_row_moves_the_inline_pane_rather_than_deleting_it(tmp_path, source):
+    """Bug 4: clicking another part while the pane was open crashed the app.
+
+    Two faults compounded. The view owned the pane, and ``beginRemoveRows``
+    re-emitted ``selectionChanged`` before returning, so the handler re-entered
+    itself and the outer call deleted the host the inner call had just put the
+    pane inside.
+    """
+    window = _inline_window(tmp_path, source, row=0)
+    window.select_row(5)
+    settle(400)
+    assert shiboken6.isValid(window.detail)
+    assert window.model.inline_row() >= 0
+    assert window.detail.isVisible()
+    window.close()
+
+
+def test_the_inline_pane_opens_under_the_part_that_was_clicked(tmp_path, source):
+    """The placeholder anchors to the selected hit, not to a stale row number.
+
+    Removing the previous placeholder shifts every row beneath it up by one, so
+    a row index read *before* the removal pointed one part too low.
+    """
+    window = _inline_window(tmp_path, source, row=0)
+    window.select_row(4)
+    settle(400)
+    row = window.model.inline_row()
+    assert window.model.hit_at(row - 1).lcsc == window.current_hit().lcsc
+    assert window.model.hit_at(row) is None  # the placeholder holds no hit
+    window.close()
+
+
+def test_the_pane_survives_a_second_search(tmp_path, source):
+    """A model reset deletes the view's editors too, inline row or not."""
+    window = _inline_window(tmp_path, source)
+    window.start_search()
+    settle(700)
+    assert shiboken6.isValid(window.detail)
+    window.select_row(1)
+    settle(400)
+    assert window.detail.isVisible()
+    window.close()
+
+
+# ---------------------------------------------------------------------------
+# Clicking the open row again closes it
+# ---------------------------------------------------------------------------
+
+
+def _click(window, row: int, column: str = "part") -> None:
+    """Click a real mouse button on display row ``row``.
+
+    A synthesised press and release rather than the two signals it produces,
+    because the *order* is what is under test: the selection changes on press
+    and ``clicked`` arrives on release, so the gesture that opens a pane ends
+    with a ``clicked`` that must not close it again. Emitting the signals by
+    hand would skip the press, which is exactly the half that decides.
+    """
+    index = window.model.index(row, COLUMN_INDEX[column])
+    window.results.scrollTo(index)
+    settle(50)
+    QTest.mouseClick(
+        window.results.viewport(),
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        window.results.visualRect(index).center(),
+    )
+
+
+def test_clicking_the_open_row_again_closes_the_pane(tmp_path, source):
+    """Bug 3: there was no gesture that gave the grid its full height back."""
+    window = make_window(tmp_path, source)
+    _click(window, 0)
+    settle(400)
+    assert window.detail.isVisible(), "the first click should open it"
+
+    _click(window, 0)
+    settle(200)
+    assert not window.detail.isVisible(), "the second click should close it"
+
+    _click(window, 0)
+    settle(200)
+    assert window.detail.isVisible(), "and the third should open it again"
+    window.close()
+
+
+def test_the_click_that_opens_the_pane_does_not_close_it(tmp_path, source):
+    """``clicked`` fires after ``selectionChanged``, on the same gesture."""
+    window = make_window(tmp_path, source)
+    _click(window, 0)
+    settle(400)
+    assert window.detail.isVisible()
+
+    _click(window, 3)  # a different row: still one gesture, still open
+    settle(400)
+    assert window.detail.isVisible()
+    assert window.current_hit().lcsc == window.model.hits()[3].lcsc
+    window.close()
+
+
+def test_a_row_reached_by_keyboard_still_closes_on_one_click(tmp_path, source):
+    """The gesture flag is scoped to a press, not left lying about.
+
+    Arrowing down opens the pane too, and if the flag that says "this gesture
+    opened it" survived until some later click, that click would be eaten and
+    the row would need clicking twice.
+    """
+    window = make_window(tmp_path, source)
+    window.results.setFocus()
+    window.select_row(0)
+    settle(300)
+    QTest.keyClick(window.results, Qt.Key.Key_Down)
+    settle(400)
+    assert window.detail.isVisible()
+    row = window.results.selectionModel().selectedRows()[0].row()
+
+    _click(window, row)
+    settle(300)
+    assert not window.detail.isVisible(), "one click, not two"
+    window.close()
+
+
+def test_closing_the_pane_inline_gives_the_row_back(tmp_path, source):
+    """Collapsing removes the placeholder, so the grid is whole again."""
+    window = _inline_window(tmp_path, source, row=0)
+    assert window.model.rowCount() == 101
+    _click(window, 0)  # the row is already selected, so this collapses
+    settle(300)
+    assert window.model.inline_row() == -1
+    assert window.model.rowCount() == 100
+    assert shiboken6.isValid(window.detail)
+    window.close()
+
+
+def test_clicking_a_photo_still_opens_the_viewer_rather_than_collapsing(
+    tmp_path, source
+):
+    """The thumbnail keeps its own meaning on a row that is already open."""
+    window = make_window(tmp_path, source)
+    _click(window, 0)
+    settle(400)
+    _click(window, 0, column="photo")
+    settle(300)
+    assert window._photo_viewer is not None
+    assert window.detail.isVisible(), "the pane should not have collapsed"
+    window._photo_viewer.close()
     window.close()
 
 
