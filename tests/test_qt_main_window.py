@@ -204,8 +204,10 @@ def _hidden_part_buttons(window) -> list:
 def test_every_toolbar_button_has_its_icon(window):
     """No button may render as a bare label.
 
-    The icon set lives in the legacy package's directory, so a path that stops
-    resolving is a real possibility whenever the layout moves. ``icons.icon()``
+    ``ICON_DIR`` is derived from this package's own location, so a path that
+    stops resolving is a real possibility whenever the layout moves — and the
+    layout has moved twice, most recently when the Phase 8 cutover merged the wx
+    plugin's icon directory into ``lcsc_suite/icons``. ``icons.icon()``
     returns an empty ``QIcon`` for anything it cannot load rather than raising —
     right for a single typo, but it means a wrong *directory* silently strips
     every icon in the window, and the resulting screenshot reads as a restyling

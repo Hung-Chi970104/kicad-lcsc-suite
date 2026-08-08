@@ -183,7 +183,7 @@ three failures instead of after a hundred.
 
 ```bash
 ./install.sh                              # bootstraps .venv, links the plugin
-.venv/bin/python -m pytest -q             # 770 tests
+.venv/bin/python -m pytest -q             # 789 tests
 .venv/bin/ruff check --extend-exclude=lib && .venv/bin/ruff format --check --exclude lib
 ```
 

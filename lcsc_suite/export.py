@@ -7,9 +7,9 @@ other tool knows this project's LCSC assignments — and because the CPL is what
 consumes the rotation and offset corrections, so dropping it would cascade into
 deleting the whole Corrections subsystem.
 
-**The rules are not reimplemented here.** They live in
-``kicad_lcsc_suite/fab_rules.py`` and the wx plugin runs the same functions, so
-the two halves cannot drift apart the way two ports of the same spec would.
+**The rules are not reimplemented here.** They live in ``fab_rules.py``, and
+while the wx plugin still existed it ran those same functions rather than a copy
+of them — which is why Phase 6 could claim byte-identical output and mean it.
 What this module owns is the *sourcing*: where a reference, a position and an
 angle come from now that there is no ``pcbnew`` to ask.
 

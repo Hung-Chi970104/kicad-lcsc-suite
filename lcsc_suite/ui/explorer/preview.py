@@ -136,10 +136,10 @@ def render_previews(cad: dict) -> tuple[Optional[str], Optional[str]]:
     """Return ``(symbol_svg, footprint_svg)`` for an EasyEDA CAD payload.
 
     Each renderer is tried separately: a part can have a symbol EasyEDA can draw
-    and a footprint it cannot, and one failing must not cost the other. Imports
-    are deferred because the vendored package only reaches ``sys.path`` once the
-    legacy package has been imported, and because nothing needs it until a row
-    is selected.
+    and a footprint it cannot, and one failing must not cost the other. The
+    imports are deferred because nothing needs them until a row is selected —
+    ``lcsc/__init__.py`` has already put the vendored ``lib/`` on ``sys.path`` by
+    then, so this is about cost, not about reachability.
     """
     if not cad:
         return None, None

@@ -215,7 +215,7 @@ carries its own frozen runtime is the plan — the metadata already declares
 | Symptom | Cause |
 |---|---|
 | Plugin missing from the menu | Directory name contains hyphens, or KiCad was not restarted |
-| Previews blank, rest works | wxPython built without `wx.svg` |
+| Previews blank, rest works | EasyEDA has no drawable symbol/footprint for that part, or `lcsc_suite/lib/` is missing |
 | Stock shows `?` | No CA trust store — set `LCSC_CA_BUNDLE` to a CA bundle |
 | Retail column stuck on `…` | LCSC detail endpoint unreachable or rate-limiting; **Refresh** to retry |
 | No product photo | Not every part has one; photos are best-effort and never block the rest |
@@ -346,9 +346,9 @@ install.sh / .ps1      symlink/junction installer
 UPSTREAM.txt           pinned upstream commits
 ```
 
-The wx half is Python 3.9 (what KiCad bundles) and uses only `wx`, `certifi`
-and the standard library; the Qt half brings its own interpreter and PySide6.
-`AGENTS.md` and `CLAUDE.md` carry the contributor rules for both.
+There is one half now: the app brings its own interpreter (3.12+) and PySide6,
+so KiCad's bundled Python 3.9 constrains nothing here any more. `AGENTS.md` and
+`CLAUDE.md` carry the contributor rules.
 
 ## Licensing — read before making this public
 

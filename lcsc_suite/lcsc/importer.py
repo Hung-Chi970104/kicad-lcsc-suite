@@ -144,8 +144,9 @@ class LcscImporter:
         """Download ``lcsc`` from EasyEDA and write it into the library."""
         result = ImportResult(lcsc=lcsc)
         try:
-            # Deferred: these live in the vendored lib/ directory, which only
-            # lands on sys.path once the plugin package has been imported.
+            # Deferred because an import is the only thing that needs them, and
+            # they are not cheap. They live in the vendored lib/ directory, which
+            # ``lcsc/__init__.py`` puts on sys.path when this package loads.
             from easyeda2kicad.easyeda.easyeda_api import EasyedaApi  # noqa: PLC0415
             from easyeda2kicad.easyeda.easyeda_importer import (  # noqa: PLC0415
                 Easyeda3dModelImporter,
