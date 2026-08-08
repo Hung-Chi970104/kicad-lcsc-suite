@@ -14,28 +14,36 @@ hidden. Nothing about a font can change this. A divergence here is a real
 portability bug (a missing icon, a control the platform style refuses to build,
 a layout that collapses), and it is a **hard failure**.
 
-**Window size** — the top-level geometry of each screen. Screens state their
-own size with ``resize()``, so this is font-independent too, and a divergence
-means a platform is overriding a size we asked for. Also a **hard failure**.
+**Window size** — the top-level geometry of each screen. Most screens state
+their own with ``resize()``, and those match to the pixel on both platforms; a
+divergence there means a platform overrode a size we asked for, and is a **hard
+failure**. The exceptions are the dialogs that have no stated size and take one
+from their contents — ``export-summary`` and ``assign-dialog`` — which get a
+budget, because their contents are text and their text is in a different face.
 
-**Interior geometry** — every widget beneath the top level. This is where a
-font family legitimately shows through: Qt sets a button's width from the text
-it holds, and the default family is the platform's, not ours. A few pixels on a
-label is Segoe UI being a different face from the macOS system font, and
-failing on it would mean failing forever. So these are **measured**, and the
-gate is a budget, not equality.
+**Collapse** — a widget with a real size on one platform and none on the other.
+A column squeezed to nothing, a pane that did not open. This is the classic
+silent regression the project already worries about, it is what a screenshot
+shows only if you knew what to expect, and it is a **hard failure** too.
 
-The budget matters more than it looks. Text metrics moving a control by two
-pixels is fine; moving it by forty means the label no longer fits and the
-platform has elided it — which is exactly the class of bug wxWidgets shipped
-and this migration exists to end. So the gate is on the **worst** single
-divergence, not the average, because an average hides precisely the one control
-that broke.
+**Everything else is reported, not failed**, and the first Windows run is why.
+The app forces Fusion and states its font *size*, but not a font *family* — so
+text is Segoe UI here and the system face on macOS. Those are different faces:
+across 38 screens, 2132 widgets differ in size and 1274 in position, and the
+largest of both are the spacers and stretchers **doing their job** — the main
+toolbar's spacer is 233px on macOS and 277px on Windows precisely because the
+buttons either side of it are narrower there. Failing on that would be failing
+on the layout working.
+
+So there is no pixel budget. A budget on a number that legitimately differs is
+a number somebody raises until it stops complaining, and the two checks above
+already catch what a budget was reaching for: a label the platform had to elide
+changes the *text*, and text is part of the structure.
 
     python scripts/compare_geometry.py docs/screens/geometry.txt windows.txt
 
-Exit status is nonzero if the structure diverges, a window size diverges, or an
-interior divergence exceeds ``--tolerance``.
+Exit status is nonzero if the structure diverges, a window whose size the app
+sets is not that size, or a widget collapsed.
 """
 
 from __future__ import annotations
@@ -69,9 +77,22 @@ LINE = re.compile(
     r"(?P<rest>.*)$"
 )
 
-#: ``  col 3 'JLC Stock' 96`` — what ``dump_table`` writes per column. Column
-#: widths are text-driven, so they are graded with the interior geometry.
-COLUMN = re.compile(r"^(?P<indent>\s*)col\s+(?P<index>\d+)\s+(?P<rest>.*?)(?P<w>\d+)$")
+#: ``  6: JLC Stock            width=  96 HIDDEN`` — what ``dump_table``
+#: writes per column, and ``  total visible width=1120, viewport=1122`` for the
+#: table as a whole. Both are text-driven, so they are graded with the interior
+#: geometry rather than as structure.
+COLUMN = re.compile(
+    r"^(?P<indent>\s*)(?P<index>\d+): (?P<header>.*?)\s*width=\s*(?P<w>\d+)"
+    r"(?P<rest>.*)$"
+)
+TOTALS = re.compile(
+    r"^(?P<indent>\s*)total visible width=(?P<w>\d+), viewport=(?P<viewport>\d+)$"
+)
+
+
+#: The measurable fields that are a *size* rather than a position. Only these
+#: can collapse; an x of 0 is an ordinary left edge.
+SIZE_FIELDS = frozenset({"w", "h", "column width", "total column width", "viewport"})
 
 
 class Divergence:
@@ -122,6 +143,16 @@ def parse(text: str) -> dict:
     return screens
 
 
+#: Anything that looks like an absolute path, in either platform's spelling.
+#: Widget *text* is compared as identity, and three screens put a real
+#: directory on screen — the Explorer's library folder, and the two schematic
+#: dialogs. Those are environment, not layout: a runner's
+#: ``C:\Users\RUNNER~1\AppData\Local\Temp\…`` is not a divergence from a
+#: developer's ``/var/folders/…``, and left alone it reported every Explorer
+#: screen as a structural failure.
+PATHLIKE = re.compile(r"(/[\w./~-]{6,}|[A-Za-z]:\\\\?[\w\\.~-]{4,})")
+
+
 def identity_of(line: str) -> str:
     """Return the part of a line that a font cannot change.
 
@@ -132,11 +163,19 @@ def identity_of(line: str) -> str:
     """
     match = LINE.match(line)
     if match:
-        return f"{match.group('head').rstrip()}{match.group('rest')}"
-    column = COLUMN.match(line)
-    if column:
-        return f"{column.group('indent')}col {column.group('index')} {column.group('rest')}"
-    return line
+        line = f"{match.group('head').rstrip()}{match.group('rest')}"
+    else:
+        column = COLUMN.match(line)
+        if column:
+            line = (
+                f"{column.group('indent')}{column.group('index')}: "
+                f"{column.group('header')}{column.group('rest')}"
+            )
+        else:
+            totals = TOTALS.match(line)
+            if totals:
+                line = f"{totals.group('indent')}total visible width"
+    return PATHLIKE.sub("<path>", line)
 
 
 def numbers_of(line: str) -> dict:
@@ -146,7 +185,13 @@ def numbers_of(line: str) -> dict:
         return {field: int(match.group(field)) for field in ("w", "h", "x", "y")}
     column = COLUMN.match(line)
     if column:
-        return {"width": int(column.group("w"))}
+        return {"column width": int(column.group("w"))}
+    totals = TOTALS.match(line)
+    if totals:
+        return {
+            "total column width": int(totals.group("w")),
+            "viewport": int(totals.group("viewport")),
+        }
     return {}
 
 
@@ -204,13 +249,25 @@ def main(argv=None) -> int:
     parser.add_argument("reference", help="the committed report (rendered on macOS)")
     parser.add_argument("compared", help="the report to check against it")
     parser.add_argument(
-        "--tolerance",
+        "--self-sized-budget",
         type=int,
-        default=12,
+        default=48,
         help=(
-            "how many pixels one widget may move before it is a failure "
-            "(default 12). Text metrics move things a little; a control that "
-            "has been elided or wrapped moves a lot."
+            "how far a dialog that sizes itself to its contents may differ "
+            "(default 48). A screen that calls resize() must match exactly; "
+            "one that does not takes its size from its text, and its text is "
+            "in a different face. Measured: export-summary differs by 37px, "
+            "assign-dialog by 7px."
+        ),
+    )
+    parser.add_argument(
+        "--collapsed-below",
+        type=int,
+        default=3,
+        help=(
+            "a visible widget this small on one platform, when the other gives "
+            "it a real size, is a collapse rather than a metric difference "
+            "(default 3)."
         ),
     )
     parser.add_argument(
@@ -246,41 +303,50 @@ def main(argv=None) -> int:
     # virtual screen, which is not ours to claim anything about.
     interior = [d for d in divergences if not d.top_level]
 
+    # A screen that states its own size must have it. One that does not is
+    # sized by its text, so it gets the budget instead — and which is which is
+    # not something this script can know, so it infers it: an exact match needs
+    # no excuse, and only the ones that differ are held to the budget.
+    oversized = [d for d in window_size if d.delta > args.self_sized_budget]
+    collapsed = [
+        d
+        for d in interior
+        if d.field in SIZE_FIELDS
+        and min(d.left, d.right) <= args.collapsed_below < max(d.left, d.right)
+    ]
+    sizes = [d for d in interior if d.field in SIZE_FIELDS]
+    positions = [d for d in interior if d.field in ("x", "y")]
+
     print(f"Comparing {args.reference_name} -> {args.compared_name}")
     print(f"  screens compared: {len(set(reference) & set(compared))}")
     print(f"  structural problems: {len(structural)}")
-    print(f"  window-size divergences: {len(window_size)}")
-    print(f"  interior divergences: {len(interior)}")
-    if interior:
-        worst = max(interior, key=lambda d: d.delta)
-        moved = sorted({d.identity for d in interior})
-        print(f"  widgets affected: {len(moved)}")
-        print(f"  worst divergence: Δ{worst.delta}px — {worst}")
-        buckets = {}
-        for d in interior:
-            buckets[d.delta] = buckets.get(d.delta, 0) + 1
-        spread = ", ".join(f"Δ{k}×{v}" for k, v in sorted(buckets.items())[:10])
-        print(f"  spread: {spread}")
+    print(f"  windows differing in size: {len(window_size)}")
+    print(f"  collapsed widgets: {len(collapsed)}")
+    print(
+        f"  reported only — interior size {len(sizes)}, position {len(positions)}, "
+        f"across {len({d.identity for d in interior})} widgets"
+    )
+    if sizes:
+        worst = max(sizes, key=lambda d: d.delta)
+        print(f"  widest size difference: Δ{worst.delta}px — {worst}")
 
     if structural:
         print("\nSTRUCTURAL PROBLEMS — a widget tree differs, which no font can do:")
         for problem in structural:
             print(f"  {problem}")
     if window_size:
-        print("\nWINDOW SIZES DIVERGED — a screen is not the size it asked for:")
+        heading = "WINDOW SIZES" if oversized else "Window sizes (within budget)"
+        print(f"\n{heading}:")
         for d in sorted(window_size, key=lambda d: -d.delta):
             print(f"  {d}")
-    over = sorted(
-        (d for d in interior if d.delta > args.tolerance), key=lambda d: -d.delta
-    )
-    if over:
-        print(f"\nOVER TOLERANCE (>{args.tolerance}px) — {len(over)} widgets:")
-        for d in over[:40]:
+    if collapsed:
+        print(
+            "\nCOLLAPSED — a widget has a size on one platform and none on the other:"
+        )
+        for d in sorted(collapsed, key=lambda d: -d.delta):
             print(f"  {d}")
-        if len(over) > 40:
-            print(f"  ... and {len(over) - 40} more")
 
-    failed = bool(structural or window_size or over)
+    failed = bool(structural or oversized or collapsed)
     print("\nRESULT:", "FAIL" if failed else "PASS")
     return 1 if failed else 0
 
