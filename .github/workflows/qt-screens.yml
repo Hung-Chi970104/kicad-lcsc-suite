@@ -44,8 +44,8 @@ jobs:
       - name: Install the app's dependencies
         # See the note on the `test` job: the hand-listed set drifted and this
         # job had never once passed. `requests` arrives through `pip install
-        # -e .` — the Qt app reaches the legacy package's library.py through
-        # shared.py, and that module imports it at the top.
+        # -e .` — the app reaches library.py through shared.py, and that module
+        # imports it at the top.
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
@@ -195,5 +195,11 @@ jobs:
         # Python — it is the safety net for the logic half through every phase.
         run: python -m pytest -q
       - name: ruff
+        # Both commands, because CLAUDE.md and AGENTS.md both state both as a
+        # hard rule and only the first was ever run here — so half of a rule
+        # described as non-negotiable was enforced by nothing but habit. The
+        # exclusions are not optional: without them the vendored
+        # lcsc_suite/lib/ contributes thousands of findings.
         run: |
           ruff check --extend-exclude=lib
+          ruff format --check --exclude lib
