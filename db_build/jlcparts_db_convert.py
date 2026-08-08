@@ -11,7 +11,7 @@ import sys
 
 # Run as a script by the GitHub Action, so there is no conftest to do this.
 # The repository root carries both packages this imports: db_build.common and
-# kicad_lcsc_suite.dblib, which defines the database format being written.
+# lcsc_suite.dblib, which defines the database format being written.
 # TODO(z2amiller):  Use proper packaging
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -25,7 +25,7 @@ from db_build.common.progress import (  # noqa: E402
     PrintNestedProgressBar,
     TqdmNestedProgressBar,
 )
-from kicad_lcsc_suite.dblib import DatabaseConfig  # noqa: E402
+from lcsc_suite.dblib import DatabaseConfig  # noqa: E402
 
 
 def update_components_db_from_api() -> None:

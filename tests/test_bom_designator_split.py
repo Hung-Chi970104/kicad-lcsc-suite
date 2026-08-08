@@ -1,49 +1,24 @@
-"""Tests for split_bom_designators – the 2048-char BOM Designator chunker.
+"""Tests for split_bom_designators — the 2048-char BOM Designator chunker.
 
-JLCPCB rejects BOM rows whose Designator field exceeds 2048 characters.
-When a single LCSC group has enough references to overflow that limit,
-generate_bom() must emit multiple rows (one per chunk).
+JLCPCB's BOM parser truncates a Designator field past 2048 characters, silently
+dropping the components after the cut. A 500-LED board is the ordinary case that
+hits it, so the chunker splits a group across as many rows as it needs and every
+row carries its own quantity.
 
-These tests exercise split_bom_designators() directly – a pure function –
-and also run generate_bom() end-to-end against a fake board that has 500
-identical LED footprints sharing one LCSC number, which is the scenario
-described in https://github.com/Bouni/kicad-jlcpcb-tools/issues/755.
+These exercise the pure function directly, and then ``fab_rules.bom_rows``,
+which is the caller that has to actually emit those extra rows. Both moved out
+of ``fabrication.py`` in Phase 6 so the wx plugin and the Qt app ran the same
+code; Phase 8 deleted the wx half, so the integration half of this file now
+calls ``bom_rows`` where it used to drive ``Fabrication.generate_bom`` through a
+fake board and a fake store. The behaviour asserted is unchanged — and it is
+asserted one layer lower, where nothing has to be faked at all.
 """
 
-import csv
-import os
-import sys
-import tempfile
-from unittest.mock import MagicMock
-
-import pytest
-
-# ---------------------------------------------------------------------------
-# Bootstrap: fabrication.py imports pcbnew at module load, so stub it first.
-# That is why the import below is not at the top of the file.
-# ---------------------------------------------------------------------------
-for _mod in ["pcbnew", "wx", "wx.dataview"]:
-    sys.modules.setdefault(_mod, MagicMock())
-
-from kicad_lcsc_suite import fabrication  # noqa: E402
-from kicad_lcsc_suite.fabrication import (  # noqa: E402
-    _BOM_DESIGNATOR_MAX_LEN,
-    Fabrication,
+from lcsc_suite.fab_rules import (
+    BOM_DESIGNATOR_MAX_LEN as _BOM_DESIGNATOR_MAX_LEN,
+    bom_rows,
     split_bom_designators,
 )
-
-
-@pytest.fixture(autouse=True)
-def _nothing_is_dnp(monkeypatch):
-    """Keep the fake footprints out of the "do not place" bucket.
-
-    ``get_is_dnp`` calls ``footprint.IsDNP()``, and on a ``MagicMock`` board
-    that returns a mock — which is truthy, so every part is silently dropped
-    and the BOM comes out empty. Patched through ``monkeypatch`` so it is undone
-    afterwards: ``fabrication`` is a real shared module now, not a per-test copy.
-    """
-    monkeypatch.setattr(fabrication, "get_is_dnp", lambda footprint: False)
-
 
 # ---------------------------------------------------------------------------
 # Unit tests for split_bom_designators()
@@ -119,131 +94,52 @@ def test_chunks_are_contiguous_and_ordered():
 
 
 # ---------------------------------------------------------------------------
-# Integration test: generate_bom() with a 500-LED fake board
+# The caller: one group, split across as many rows as it needs
 # ---------------------------------------------------------------------------
 
 N_LEDS = 500
 _LED_REFS = [f"LED{i}" for i in range(1, N_LEDS + 1)]
 
 
-class _FakeBoard:
-    """Minimal board stub whose Footprints() returns one mock fp per ref."""
-
-    def __init__(self, refs):
-        self._refs = refs
-
-    def Footprints(self):
-        """Return mock footprints, one per reference."""
-        fps = []
-        for ref in self._refs:
-            fp = MagicMock()
-            fp.GetReference.return_value = ref
-            fps.append(fp)
-        return fps
+def _rows(refs, lcsc="C25741", value="WS2812B", footprint="LED_0805"):
+    """Return the BOM rows for one grouped part covering *refs*."""
+    return bom_rows(
+        [{"value": value, "refs": ",".join(refs), "footprint": footprint, "lcsc": lcsc}]
+    )
 
 
-class _FakeStore:
-    """Minimal store stub that returns a single BOM part group."""
-
-    def __init__(self, refs, value, footprint, lcsc):
-        self._refs = refs
-        self._value = value
-        self._footprint = footprint
-        self._lcsc = lcsc
-
-    def read_bom_parts(self):
-        """Return one part group with all refs joined."""
-        return [
-            {
-                "refs": ",".join(self._refs),
-                "value": self._value,
-                "footprint": self._footprint,
-                "lcsc": self._lcsc,
-            }
-        ]
+def test_500_leds_keep_every_reference():
+    """All 500 refs must appear, across however many rows it takes."""
+    found = []
+    for row in _rows(_LED_REFS):
+        found.extend(row[1].split(","))
+    assert sorted(found) == sorted(_LED_REFS)
 
 
-def _make_fake_fab_for_bom(refs, lcsc="C25741", value="WS2812B", footprint="LED_0805"):
-    """Build a minimal Fabrication instance whose generate_bom() we can call.
-
-    The fake board has one footprint per ref; the fake store returns a single
-    part group with all those refs joined.
-    """
-    fab = object.__new__(Fabrication)
-    fab.logger = MagicMock()
-    fab.board = _FakeBoard(refs)
-
-    fake_parent = MagicMock()
-    fake_parent.settings.get.return_value = {"lcsc_bom_cpl": True}
-    fake_parent.store = _FakeStore(refs, value, footprint, lcsc)
-    fab.parent = fake_parent
-
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, newline="")
-    tmp.close()
-    fab._tmppath = tmp.name
-    fab.get_bom_csv_path = lambda: fab._tmppath
-    return fab
+def test_500_leds_no_row_exceeds_the_limit():
+    """The limit is the whole reason this splits; no row may cross it."""
+    for row in _rows(_LED_REFS):
+        assert len(row[1]) <= _BOM_DESIGNATOR_MAX_LEN
 
 
-def _read_bom_rows(fab):
-    """Run generate_bom() and return the data rows (excluding the header)."""
-    fab.generate_bom()
-    with open(fab._tmppath, newline="", encoding="utf-8") as fh:
-        rows = list(csv.reader(fh))
-    os.unlink(fab._tmppath)
-    return rows[1:]
+def test_each_rows_quantity_is_its_own_reference_count():
+    """A row's quantity counts that row, not the group it came from."""
+    for row in _rows(_LED_REFS):
+        assert row[4] == len(row[1].split(","))
 
 
-def test_generate_bom_500_leds_all_refs_present():
-    """All 500 LED refs must appear in the output BOM (possibly across rows)."""
-    fab = _make_fake_fab_for_bom(_LED_REFS)
-    rows = _read_bom_rows(fab)
-    found_refs = []
-    for row in rows:
-        found_refs.extend(row[1].split(","))
-    assert sorted(found_refs) == sorted(_LED_REFS)
+def test_the_quantities_still_sum_to_the_whole_group():
+    """Splitting must not lose or duplicate a component."""
+    assert sum(row[4] for row in _rows(_LED_REFS)) == N_LEDS
 
 
-def test_generate_bom_500_leds_no_row_exceeds_2048():
-    """No Designator field in any output row may exceed 2048 characters."""
-    fab = _make_fake_fab_for_bom(_LED_REFS)
-    rows = _read_bom_rows(fab)
-    for row in rows:
-        designator_field = row[1]
-        assert len(designator_field) <= _BOM_DESIGNATOR_MAX_LEN, (
-            f"Designator field length {len(designator_field)} exceeds {_BOM_DESIGNATOR_MAX_LEN}"
-        )
+def test_500_leds_really_do_split():
+    """If this ever stops splitting, the tests above pass while proving nothing."""
+    assert len(_rows(_LED_REFS)) > 1
 
 
-def test_generate_bom_500_leds_quantity_matches_chunk_size():
-    """The Quantity column in each row must equal the number of refs in that row."""
-    fab = _make_fake_fab_for_bom(_LED_REFS)
-    rows = _read_bom_rows(fab)
-    for row in rows:
-        designators = row[1].split(",")
-        quantity = int(row[4])
-        assert quantity == len(designators)
-
-
-def test_generate_bom_500_leds_total_quantity_correct():
-    """Sum of Quantity across all rows must equal the total component count."""
-    fab = _make_fake_fab_for_bom(_LED_REFS)
-    rows = _read_bom_rows(fab)
-    total = sum(int(row[4]) for row in rows)
-    assert total == N_LEDS
-
-
-def test_generate_bom_500_leds_multiple_rows_emitted():
-    """500 LEDs must produce more than one BOM row (the 2048-char split must fire)."""
-    fab = _make_fake_fab_for_bom(_LED_REFS)
-    rows = _read_bom_rows(fab)
-    assert len(rows) > 1, "Expected BOM to be split into multiple rows"
-
-
-def test_generate_bom_small_board_stays_single_row():
-    """A board with few components (no overflow) must still produce exactly one row."""
-    refs = [f"R{i}" for i in range(1, 11)]
-    fab = _make_fake_fab_for_bom(refs, lcsc="C25741", value="100k", footprint="R0402")
-    rows = _read_bom_rows(fab)
+def test_a_small_group_stays_one_row():
+    """Nothing splits that does not have to."""
+    rows = _rows([f"R{i}" for i in range(1, 11)], value="100k", footprint="R0402")
     assert len(rows) == 1
-    assert int(rows[0][4]) == 10
+    assert rows[0][4] == 10

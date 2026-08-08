@@ -29,6 +29,7 @@ dev/
 # The Qt app keeps its own copy in the per-user config directory
 # (lcsc_suite/config.py) and imports this one once, via shared.LEGACY_ROOT.
 /kicad_lcsc_suite/settings.json
+/lcsc_suite/jlcpcb/
 
 # Lib-table backups this plugin writes before editing a KiCad table
 *.lcsc-suite.bak

@@ -202,12 +202,99 @@ class Settings:
             log.exception("Could not save settings to %s", self.path)
 
 
+#: The repository root — the directory this package sits in.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+#: Where the wx plugin's ``settings.json`` may still be, for the one-time
+#: import. Both spellings, because the plugin moved between them: it *was* the
+#: repository root until the reorganisation between Phases 2 and 3, and
+#: ``kicad_lcsc_suite/`` after it. The package is gone as of Phase 8 but a
+#: user's file is not, and importing preferences once is the whole point.
+LEGACY_SETTINGS_PATHS = (
+    os.path.join(_ROOT, "kicad_lcsc_suite", SETTINGS_FILENAME),
+    os.path.join(_ROOT, SETTINGS_FILENAME),
+)
+
+#: Where the databases have lived, newest spelling first. Same story as the
+#: settings file and with worse consequences, because one of these directories
+#: holds a 750MB download.
+LEGACY_DATA_DIRECTORIES = (
+    os.path.join(_ROOT, "kicad_lcsc_suite", "jlcpcb"),
+    os.path.join(_ROOT, "jlcpcb"),
+)
+
+
 def legacy_settings_path() -> str:
-    """Where the wx plugin keeps its settings, for the one-time import.
+    """Where the wx plugin kept its settings, for the one-time import."""
+    for path in LEGACY_SETTINGS_PATHS:
+        if os.path.isfile(path):
+            return path
+    return LEGACY_SETTINGS_PATHS[0]
 
-    Inside the legacy package, because that is what ``settings.py`` resolves its
-    ``PLUGIN_PATH`` to — the directory the plugin is installed as.
+
+def data_directory() -> str:
+    """Where the parts databases live when nothing has been configured.
+
+    **Not derived from this package's location, and that is the whole point.**
+    ``library.py`` used to fall back to ``<its own directory>/jlcpcb``, which
+    silently redefines where a user's data is every time the package moves. It
+    has already cost that once: the reorganisation between Phases 2 and 3 moved
+    the plugin into ``kicad_lcsc_suite/`` and orphaned the 750MB parts database
+    sitting in the old root, which is why the Offline DB looks empty on this
+    machine while the file is still on disk. The Phase 8 cutover would have done
+    it a second time.
+
+    A per-user data directory has neither problem, and it is the same reasoning
+    that moved ``settings.json`` out of the checkout in Phase 0: a frozen
+    binary's install directory may be read-only.
     """
-    from .shared import LEGACY_ROOT
+    base = QStandardPaths.writableLocation(
+        QStandardPaths.StandardLocation.AppDataLocation
+    )
+    return os.path.join(base or os.path.expanduser("~"), "jlcpcb")
 
-    return os.path.join(LEGACY_ROOT, SETTINGS_FILENAME)
+
+def adopt_data_directory(settings) -> str:
+    """Point an unconfigured install at data it already has.
+
+    Adopts rather than moves. The candidates hold up to 750MB, a half-finished
+    copy of which is worse than no copy, and the user's files are not this
+    function's to relocate. Once adopted the choice is *written to settings*, so
+    the answer stops depending on where any module happens to live.
+
+    Where more than one candidate has content the largest wins, on the grounds
+    that the bulk parts database is the expensive one and the rest is a cache
+    that refills. Both are logged either way, because the losing directory is
+    still on disk and the Settings dialog can point at it.
+    """
+    library = settings.values.setdefault("library", {})
+    if str(library.get("data_path", "")).strip():
+        return library["data_path"]
+
+    found = []
+    for directory in LEGACY_DATA_DIRECTORIES:
+        if not os.path.isdir(directory):
+            continue
+        size = 0
+        for name in os.listdir(directory):
+            path = os.path.join(directory, name)
+            if os.path.isfile(path) and name.endswith(".db"):
+                size += os.path.getsize(path)
+        if size:
+            found.append((size, directory))
+    if not found:
+        return ""
+
+    found.sort(reverse=True)
+    chosen = found[0][1]
+    for size, directory in found:
+        log.info(
+            "Found %s of databases in %s%s",
+            f"{size / 1e6:.0f}MB",
+            directory,
+            "" if directory == chosen else " (not adopted)",
+        )
+    library["data_path"] = chosen
+    settings.save()
+    log.info("Database directory set to %s; change it in Settings", chosen)
+    return chosen

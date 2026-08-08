@@ -6,91 +6,79 @@ lives, and the invariants that bite. Then
 together and [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for setup, tests,
 lint and headless GUI verification.
 
-The two rules below are inherited from upstream and are non-negotiable.
-
 ## Code quality
 
-All commits must be ruff-clean. Run `ruff check` and `ruff format --check` before committing.
-When making changes to a file, only reformat lines you are intentionally changing.
-
-Pass the vendored-code exclusion or you get 3445 errors from
-`kicad_lcsc_suite/lib/`:
+All commits must be ruff-clean. Run both before committing:
 
 ```bash
 ruff check --extend-exclude=lib
 ruff format --check --exclude lib
 ```
 
-Use `ruff==0.14.14`, matching `.pre-commit-config.yaml`. `ruff check` passes
-clean at HEAD; `ruff format --check` does **not** — four untouched upstream
-files (`corrections.py`, `events.py`, `kicad_drc.py`, `partdetails.py`, all
-under `kicad_lcsc_suite/`) would be reformatted. Leave them alone.
+The exclusion is not optional — without it you get 3445 errors out of the
+vendored `lcsc_suite/lib/`. Use `ruff==0.14.14`, matching
+`.pre-commit-config.yaml`.
 
-## Migration in progress
+Both commands pass clean at HEAD. They did not before Phase 8: four upstream
+files (`corrections.py`, `events.py`, `kicad_drc.py`, `partdetails.py`) were
+permanently listed as "would reformat, leave them alone", and all four went
+with the wx plugin. If `ruff format --check` reports anything now, it is yours.
 
-The UI is being rewritten as an out-of-process **PySide6** app driven over
-KiCad 10's IPC API. Read **[docs/QT_MIGRATION_PLAN.md](docs/QT_MIGRATION_PLAN.md)**
-before touching UI code — it carries the screen inventory, the phase order, and
-four IPC traps that each cost real time to find.
+When making changes to a file, only reformat lines you are intentionally
+changing.
 
-Which rules apply depends on which half you are in:
+## One application, one interpreter
 
-| | Legacy wx plugin (`kicad_lcsc_suite/`) | New app (`lcsc_suite/`) |
-|---|---|---|
-| Interpreter | KiCad's bundled **Python 3.9** | own venv, **3.12+** |
-| Toolkit | wxPython | PySide6 (Fusion style) |
-| Verify with | `scripts/gui_probe.py` | `scripts/qt_probe.py` |
+The migration is **done**. The UI is an out-of-process **PySide6** app driven
+over KiCad 10's IPC API, and the in-process wxPython plugin is gone as of the
+Phase 8 cutover — read
+**[docs/QT_MIGRATION_PLAN.md](docs/QT_MIGRATION_PLAN.md)** §10 for what that
+moved and what it settled, and §2 for the four IPC traps that each cost real
+time to find.
 
-`lcsc_suite/shared.py` is the only sanctioned route from the new app into the
-old package's logic modules. Imports go that way and no other; nothing adds a
-`sys.path` entry of its own.
+| | The app (`lcsc_suite/`) |
+|---|---|
+| Interpreter | own venv, **3.12+** |
+| Toolkit | PySide6 (Fusion style) |
+| KiCad | 10.0 or newer, API server enabled |
+| Verify with | `scripts/qt_probe.py` |
 
-Keep the legacy plugin working until the plan's Phase 8 cutover.
+Two rules that used to constrain this repo and **no longer apply**: Python 3.9
+compatibility (`Optional[X]` over `X | None`, no `match`/`case`) and "no runtime
+dependencies". Both belonged to KiCad's bundled interpreter, which nothing here
+runs in any more. `pyproject.toml` still pins `UP006/UP007/UP035/UP045` off;
+turning them back on is a deliberate, separate change.
 
-## Python version compatibility
-
-**Legacy wx plugin only** — that is, `kicad_lcsc_suite/`. KiCad's internal
-Python interpreter is **Python 3.9**, so anything the wx plugin imports must be
-3.9-compatible.
-
-- Use `Optional[X]` instead of `X | None`
-- No `match`/`case` statements
-- No use of `typing.Self`, `typing.TypeAlias`, `typing.ParamSpec`, or other 3.10+ additions
-
-PEP 585 builtin generics (`list[str]`, `dict[str, int]`) *are* fine on 3.9.
-PEP 604 unions are not, unless the module opens with
-`from __future__ import annotations`.
-
-This does **not** apply to `lcsc_suite/` (own interpreter), `db_build/`
-(GitHub Action), or shared logic modules once nothing on 3.9 imports them.
-Note that most of `kicad_lcsc_suite/` *is* shared logic the Qt app imports, so
-it stays on 3.9 until the Phase 8 cutover.
+`lcsc_suite/shared.py` names the toolkit-free logic layer — `store`, `library`,
+`lcsc/api.py`, the BOM rules — and importing through it keeps that boundary
+visible. `lcsc/api.py` is **copied, not edited**: if a UI need seems to require
+an API change, change the UI.
 
 ## Verifying UI changes
 
 **Never claim a UI change works without looking at a screenshot.** Geometry
-dumps miss what users see; that mistake is the reason this migration exists.
-
-New Qt app — renders with no display, no permissions, works in CI:
+dumps miss what users see; that mistake is the reason this migration happened.
 
 ```bash
-.venv/bin/python scripts/qt_probe.py explorer   # writes docs/screens/explorer.png
+.venv/bin/python scripts/qt_probe.py --all --theme both   # docs/screens/*.png
 ```
 
-Commit the updated PNG in the same commit as the UI change, so the diff shows
-the visual change.
+Commit the updated PNGs in the same commit as the UI change, so the diff shows
+the visual change. `--geometry` is a supplement, never a substitute.
 
-Legacy wx dialogs — KiCad's wxWidgets raises assertions as Python exceptions,
-and one bad sizer flag aborts a dialog mid-build with no error message:
+Cross-platform layout is a **CI gate**, not a promise:
 
 ```bash
-/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 scripts/gui_probe.py explorer
+.venv/bin/python scripts/qt_probe.py --all --theme both --geometry-out mine.txt
+.venv/bin/python scripts/compare_geometry.py docs/screens/geometry.txt mine.txt
 ```
 
-wx windows can also be screenshotted offscreen (`wx.WindowDC` → `wx.Bitmap`),
-and `screencapture` works on macOS. Note that a macOS screenshot of a **wx**
-window says nothing about Windows, because wx wraps native controls — that
-limitation is precisely what Qt fixes.
+`docs/screens/geometry.txt` is the committed macOS reference; the `windows` job
+in `.github/workflows/qt-screens.yml` renders on `windows-latest` and compares
+against it. It gates on the widget tree, on the size of every window that
+states one, and on collapse — **not** on pixel equality, because the app pins a
+font size and not a font family. `scripts/compare_geometry.py`'s docstring has
+the measurements behind that decision.
 
 ## Writing to the board over IPC
 
@@ -102,3 +90,6 @@ board — a clean return value proves nothing.
 verifying between `begin_commit()` and `push_commit()` compares against the old
 state and makes every write look like it failed. Push, then verify, then put the
 previous values back if it did not land. See the plan's §2 for all four traps.
+
+Re-run `scripts/live_ipc_check.py` against a **copy** of a real board whenever
+`kicad_bridge.py` changes.

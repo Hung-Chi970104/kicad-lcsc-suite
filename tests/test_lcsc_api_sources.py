@@ -17,7 +17,7 @@ Network access is stubbed throughout; nothing here touches the wire.
 
 import pytest
 
-from kicad_lcsc_suite.lcsc import api
+from lcsc_suite.lcsc import api
 
 
 @pytest.fixture(autouse=True)

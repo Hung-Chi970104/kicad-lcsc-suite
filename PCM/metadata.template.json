@@ -1,30 +1,31 @@
 {
     "$schema": "https://go.kicad.org/pcm/schemas/v1",
-    "name": "KiCAD JLCPCB tools",
-    "description": "A JLCPCB integration addon for KiCAD",
-    "description_full": "This plugin allows you to search the JLCPCB parts database, assign LCSC article numbers to your parts, generate production files for JLCPCB and much more.",
-    "identifier": "com.github.bouni.kicad-jlcpcb-tools",
+    "name": "LCSC Suite",
+    "description": "LCSC/JLCPCB part assignment and library import for KiCad",
+    "description_full": "Search the LCSC and JLCPCB parts catalogues, assign LCSC part numbers to your footprints, import symbols and footprints, and export the BOM and CPL files JLCPCB assembly needs. Reports JLC assembly stock and LCSC retail stock separately, because they are different inventories and routinely disagree.",
+    "identifier": "com.lcscsuite.plugin",
     "type": "plugin",
     "author": {
-        "name": "Bouni",
+        "name": "Hung-Chi Wang",
         "contact": {
-            "twitter": "@bouni2016"
+            "web": "https://github.com/Hung-Chi970104/kicad-lcsc-suite"
         }
     },
     "maintainer": {
-        "name": "Bouni",
+        "name": "Hung-Chi Wang",
         "contact": {
-            "twitter": "@bouni2016"
+            "web": "https://github.com/Hung-Chi970104/kicad-lcsc-suite"
         }
     },
     "license": "MIT",
     "resources": {
-        "homepage": "https://github.com/bouni/kicad-jlcpcb-tools"
+        "homepage": "https://github.com/Hung-Chi970104/kicad-lcsc-suite"
     },
     "versions": [{
         "version": "VERSION_HERE",
         "status": "testing",
-        "kicad_version": "6.0",
+        "kicad_version": "10.0",
+        "runtime": "ipc",
         "download_sha256": "SHA256_HERE",
         "download_size": DOWNLOAD_SIZE_HERE,
         "download_url": "DOWNLOAD_URL_HERE",

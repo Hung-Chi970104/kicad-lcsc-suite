@@ -5,279 +5,203 @@ jump to [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the code fits
 together and [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for how to build,
 test and verify changes.
 
-`CLAUDE.md` holds the two non-negotiable rules (Python 3.9, ruff-clean).
-They are repeated below because breaking either one ships a plugin that
-does not load.
+`CLAUDE.md` holds the rules that ship a broken plugin if you break them.
 
 ---
 
 ## What this repo is
 
-A **KiCad plugin**, not a library or a service. It is a fork of
+A **KiCad 10 plugin**, not a library or a service. It is a fork of
 `Bouni/kicad-jlcpcb-tools` with `uPesy/easyeda2kicad.py` vendored in
-(`kicad_lcsc_suite/lib/easyeda2kicad/`) and an LCSC Explorer added on top.
-Upstream commits are pinned in `UPSTREAM.txt`.
+(`lcsc_suite/lib/easyeda2kicad/`) and an LCSC Explorer added on top. Upstream
+commits are pinned in `UPSTREAM.txt`.
 
-`install.sh` symlinks both halves into KiCad's plugin directories, so edits are
-live after a KiCad restart. There is no build step.
+The UI runs **out of process**: a PySide6 application in its own virtualenv,
+talking to KiCad over the IPC API. KiCad launches it from a manifest whose
+`runtime.type` is `exec`, so it brings its own Python and KiCad does not care
+which one. The in-process wxPython plugin it replaced was removed at the
+Phase 8 cutover; see [docs/QT_MIGRATION_PLAN.md](docs/QT_MIGRATION_PLAN.md).
+
+`install.sh` bootstraps the venv and symlinks `kicad_plugin/` into KiCad's
+plugin directory, so edits are live after a KiCad restart. There is no build
+step.
 
 Entry points:
 
 | File | Role |
 |---|---|
-| [`kicad_lcsc_suite/__init__.py`](kicad_lcsc_suite/__init__.py) | Adds `lib/` to `sys.path`, and registers the toolbar action **only when a real pcbnew is importable** — so importing the package for its logic modules does not drag in the whole wx UI. |
-| [`kicad_lcsc_suite/plugin.py`](kicad_lcsc_suite/plugin.py) | `pcbnew.ActionPlugin` subclass; toolbar entry "LCSC Suite" → opens `JLCPCBTools`. |
-| [`kicad_lcsc_suite/__main__.py`](kicad_lcsc_suite/__main__.py) | Standalone mode — runs the wx UI outside KiCad against `standalone_impl.KicadStub`. |
-| [`lcsc_suite/__main__.py`](lcsc_suite/__main__.py) | The Qt app. `--fixture` runs it against `fixtures/board.json` with no KiCad at all. |
+| [`kicad_plugin/plugin.json`](kicad_plugin/plugin.json) | the IPC manifest KiCad reads; declares the toolbar button |
+| [`kicad_plugin/run.sh`](kicad_plugin/run.sh) | the launcher. **Unsets `PYTHONHOME`** (trap 1) then runs the venv Python |
+| [`lcsc_suite/__main__.py`](lcsc_suite/__main__.py) | the app. `--fixture` runs it against `fixtures/board.json` with no KiCad at all |
 
 ## Hard rules
 
-0. **A migration is underway.** The UI is moving out-of-process to PySide6 on
-   KiCad 10's IPC API — see
-   [docs/QT_MIGRATION_PLAN.md](docs/QT_MIGRATION_PLAN.md). Rules 1 and 3 below
-   are scoped to the **legacy wx plugin** and do not constrain `lcsc_suite/`.
-   Gerber and drill generation are **out of scope** and being removed; BOM and
-   CPL stay.
-1. **Python 3.9 — legacy wx plugin only.** KiCad bundles 3.9 (verified:
-   3.9.13 on macOS, still true on **KiCad 10.0.3**). In the wx plugin use
-   `Optional[X]`, `Dict[...]`, `List[...]` — never `X | None`, never
-   `match`/`case`, never `typing.Self`/`TypeAlias`/`ParamSpec`.
-   `pyproject.toml` pins `UP006/UP007/UP035/UP038/UP045` **off** so ruff
-   cannot rewrite these into 3.10-only syntax. Do not re-enable them while the
-   wx plugin lives.
-   *Exceptions:* `db_build/` (GitHub Actions, ≥3.10) and `lcsc_suite/` (own
-   venv, 3.12+).
-2. **ruff-clean commits.** `ruff check` and `ruff format --check` must pass.
+1. **ruff-clean commits.** `ruff check --extend-exclude=lib` and
+   `ruff format --check --exclude lib` must both pass. Both are clean at HEAD.
    When editing a file, reformat only the lines you intend to change.
-3. **Dependencies: legacy plugin none, new app declared.** The *wx plugin*
-   must run on a bare KiCad install — nothing the user has to `pip install`.
-   Available there: the stdlib, `wx` (incl. `wx.svg`), `pcbnew`, and what
-   KiCad ships (`requests`, `certifi`), plus the vendored
-   `kicad_lcsc_suite/lib/easyeda2kicad/`. Existing `lcsc/` code sticks to
-   `urllib` + stdlib.
+2. **Never edit `lcsc_suite/lib/`.** Vendored upstream code, excluded from ruff
+   and pre-commit. Changes belong upstream or in a wrapper.
+3. **AGPL boundary.** `lcsc_suite/lib/easyeda2kicad/` is AGPL-3.0; the rest is
+   MIT. See the licensing section of [README.md](README.md) before making the
+   repo public or cutting a release.
+4. **Dependencies are declared and they ship.** The app requires a one-time
+   setup step — `install.sh` builds a `.venv` and pip-installs `PySide6` and
+   `kicad-python`, pinned in `APP_REQUIREMENTS`. That is a deliberate product
+   decision: users get a UI that behaves the same on macOS and Windows in
+   exchange for running the installer once. Add further dependencies
+   deliberately. `pyproject.toml`'s `dependencies` list belongs to the
+   `db_build` tooling, not to the app.
+5. **`lcsc/api.py` is copied, not edited.** If a UI need seems to require an API
+   change, change the UI. §4 of the migration plan says why at length.
 
-   The *new app* **does** require a one-time setup step, and that is a product
-   decision, not an oversight: `install.sh` / `install.ps1` bootstrap a `.venv`
-   and pip-install `PySide6` and `kicad-python`. Users gain a UI that behaves
-   identically on macOS and Windows in exchange for running the installer once.
-   A PyInstaller freeze replaces the venv before any public release; because
-   `runtime.type` is `exec`, that swap touches only `kicad_plugin/run.sh`.
-   Add further dependencies deliberately — every one ships to users. The venv's
-   contents are pinned in `install.sh`'s `APP_REQUIREMENTS`.
-
-   `pyproject.toml`'s `dependencies` list belongs to the `db_build` tooling
-   (including its `common/` library), and to neither half of the plugin.
-4. **Never edit `kicad_lcsc_suite/lib/`.** It is vendored upstream code,
-   excluded from ruff and pre-commit. Changes belong upstream or in a wrapper.
-5. **AGPL boundary.** `kicad_lcsc_suite/lib/easyeda2kicad/` is AGPL-3.0; the
-   rest is MIT. See the licensing section of [README.md](README.md) before
-   making the repo public or cutting a release.
+Two rules that used to be here are **gone**, and both were consequences of
+running inside KiCad's interpreter: Python 3.9 syntax compatibility, and "no
+runtime dependencies — must run on a bare KiCad install".
 
 ## Where things live
 
-Two application packages, one per half of the migration. **Which one you are in
-decides the interpreter, the toolkit and the verification tool** — see the table
-in [CLAUDE.md](CLAUDE.md).
-
 ```text
-lcsc_suite/            THE NEW APP — out-of-process PySide6, own venv (3.12+)
+lcsc_suite/            THE APPLICATION — out-of-process PySide6, own venv (3.12+)
   kicad_bridge.py      the only module that touches KiCad; closes all four IPC traps
-  shared.py            THE ONLY WAY IN to kicad_lcsc_suite's logic modules
   controller.py        SuiteController — the window reports, this decides and writes
-  parts.py             board ↔ project database ↔ displayed rows, reconciled
+  parts.py             board <-> project database <-> displayed rows, reconciled
   search_source.py     where the Explorer's data comes from: live, or the fixture
   undo.py              the app's own undo; KiCad's cannot reach the project database
-  config.py            settings in the per-user config dir, imported once from the wx plugin
+  config.py            settings and the database directory, both per-user
   app.py               QApplication bootstrap (Fusion + palette + font)
-  ui/                  the widgets; ui/theme.py is the Qt port of lcsc/theme.py
+  shared.py            names the toolkit-free logic layer; import through it
+  ui/                  the widgets; ui/theme.py owns every colour
     explorer/          the LCSC Explorer — window, results, facets, detail, preview, tasks
     photo_viewer.py    full-size product photos, retargetable while open
   fixtures/board.json  a 110-footprint board for the probe, CI and the bridge tests
   fixtures/explorer/   one captured search (raw payloads + thumbnails); see below
 
-kicad_lcsc_suite/      THE LEGACY PLUGIN — in-process wx, KiCad's bundled 3.9.
-                       Also holds the logic and assets both halves share, until
-                       the Phase 8 cutover promotes the survivors into lcsc_suite/.
-  mainwindow.py        JLCPCBTools — the main dialog; owns Library, Store, Fabrication
-  lcsc/                the LCSC Explorer feature (this fork's addition)
-    api.py             JLC assembly + LCSC retail + JLC search; StockReport, SearchHit,
+  --- the logic layer: no toolkit, and mostly older than the migration ---
+  lcsc/api.py          JLC assembly + LCSC retail + JLC search; StockReport, SearchHit,
                        the EasyEDA retail fallback and _HostBreaker
-    details.py         per-part details from the API (replaces the bulk-DB lookup)
-    explorer.py        LcscExplorerDialog — search, facets, detail pane, import/assign
-    facetfilter.py     multi-select parametric filter (ComboCtrl + CheckListBox popup)
-    importer.py        EasyEDA -> KiCad library + sym-lib-table/fp-lib-table registration
-    photoviewer.py     full-size product photos; opened by clicking a thumbnail
-    previewpanel.py    symbol/footprint (wx.svg) and product-photo tiles
-    theme.py           light/dark aware colours; use this, never hard-code a wx.Colour
+  lcsc/details.py      per-part details from the API
+  lcsc/importer.py     EasyEDA -> KiCad library + sym-lib-table/fp-lib-table registration
   library.py           optional bulk parts DB, the API part cache, corrections, mappings
   store.py             per-project SQLite state (<board dir>/jlcpcb/project.db)
+  fab_rules.py         the BOM/CPL rules: corrections, rotation, offsets, grouping
   schematicexport.py   writes the assigned LCSC numbers into the .kicad_sch symbols
-  schematicimport.py   reads them back out; no wx, no pcbnew, so it is unit-testable
-  fabrication.py       Gerber/Excellon/BOM/CPL generation
-  datamodel.py         wx.dataview models for the part list and the part selector
-  settings.py          the settings dialog
-  corrections.py       rotation/offset correction manager dialog
-  partmapper.py        footprint→LCSC mapping manager dialog
-  helpers.py           PLUGIN_PATH, scaling, icons, dark-mode detection, natural sort
-  events.py            worker thread → UI; dispatches to Qt or wx, so both halves use it
-  bom_estimation/      pure pricing/estimation logic + view formatting (no wx in pricing.py)
-  enrichment/          per-part metadata providers (assembly process lookups)
+  schematicimport.py   reads them back out
+  derive_params.py     the LCSC Params column
+  highlight_terms.py   which spellings count as the same part (390R is 390Ω)
+  bom_estimation/      pricing and estimation logic + view formatting
   dblib/               the bulk parts-DB format definitions, shared with db_build/
-  icons/               the icon set, shared with the Qt app via shared.LEGACY_ROOT
+  icons/               55 PNGs, recoloured for dark mode by ui/icons.py
   lib/                 VENDORED — easyeda2kicad (AGPL) and packaging. Do not edit.
-  VERSION              read by helpers.py at runtime; PCM rewrites it on release
 
-kicad_plugin/          what gets installed into KiCad's plugins/ dir (the Qt app)
-  plugin.json          the IPC API manifest; runtime.type = exec
-  run.sh / run.cmd     launcher; unsets PYTHONHOME (trap 1) then runs the venv Python
-db_build/              GitHub Action DB conversion (Python ≥3.10, not plugin code)
-  common/              its parts-DB build & translation library
-scripts/qt_probe.py    renders any Qt screen offscreen to docs/screens/*.png
-scripts/gui_probe.py   the same job for the wx dialogs, under KiCad's Python
-scripts/live_ipc_check.py  proves the bridge's writes against a running KiCad
+kicad_plugin/          what gets symlinked into KiCad's plugins/ dir
+db_build/              GitHub Action DB conversion (not plugin code)
+scripts/qt_probe.py    renders any screen offscreen to docs/screens/*.png
+scripts/compare_geometry.py  the cross-platform layout gate; CI runs it on Windows
+scripts/live_ipc_check.py    proves the bridge's writes against a running KiCad
 scripts/capture_explorer_fixture.py  ONE SHOT, run by hand. Spends live requests
-                       against hosts that rate-limit; the fixture is committed
-tests/                 every test, for both halves — the only pytest testpath
+tests/                 every test — the only pytest testpath
+docs/screens/          committed PNGs, plus geometry.txt and wx/ (see below)
 ```
 
 Full subsystem walkthrough: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**The Qt app never touches the network in a probe or a test.**
+**`docs/screens/wx/` holds six screenshots of the plugin that is gone.** They
+are the Phase 8 parity evidence and the only picture of the wx UI that ever
+existed — §5 of the plan describes it in prose and no capture was committed at
+the time. They do not re-render; nothing can produce them any more.
+
+**The app never touches the network in a probe or a test.**
 `search_source.build_source()` defaults to the live endpoints; the probe and the
 tests pass `FixtureSource`, which primes `api.py`'s own cache with one captured
 search and installs a host breaker that refuses everything else. Same shape as
 `Library(allow_network=False)`. The capture is *raw payloads*, replayed through
 `api.py`'s real parsers — never stored `SearchHit` objects.
 
-**Importing across the halves** goes one way only, and through one door:
-`lcsc_suite.shared` imports from `kicad_lcsc_suite`, never the reverse, and
-nothing adds a `sys.path` entry of its own. Tests reach both by name because
-[tests/conftest.py](tests/conftest.py) puts the repository root on the path.
-
 ## Navigation shortcuts
 
-- **A UI control behaves wrong** → find its handler in
-  [`mainwindow.py`](kicad_lcsc_suite/mainwindow.py) (methods are grouped by feature; the
-  toolbar handlers start around [`select_part`](kicad_lcsc_suite/mainwindow.py#L1412)) or in
-  [`lcsc/explorer.py`](kicad_lcsc_suite/lcsc/explorer.py).
-- **Stock numbers / warnings** → [`lcsc/api.py`](kicad_lcsc_suite/lcsc/api.py):
+- **A UI control behaves wrong** → the widget is under
+  [`lcsc_suite/ui/`](lcsc_suite/ui/); what it *does* is in
+  [`controller.py`](lcsc_suite/controller.py). The split is one line: the window
+  builds, displays and reports; the controller decides and writes.
+- **Stock numbers / warnings** → [`lcsc/api.py`](lcsc_suite/lcsc/api.py):
   `stock_report`, `_build_warnings`, `StockReport`.
 - **A column or the thumbnails have gone blank** → check reachability before
   the UI. LCSC 403s whole networks, taking every `*.lcsc.com` host with it;
-  JLCPCB's are unaffected. Retail stock falls through to EasyEDA
-  (`api.retail_stock`) and photos come from JLC's file service
-  (`api.jlc_image_url`) for exactly this reason — see
-  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3. A one-line check:
+  JLCPCB's are unaffected. Retail stock falls through to EasyEDA and photos come
+  from JLC's file service for exactly this reason. A one-line check:
   `curl -o /dev/null -w '%{http_code}\n' https://wmsc.lcsc.com/ftps/wm/product/detail?productCode=C1592`
 - **Search results or parametric filters** → `jlc_search`, `build_facets`,
-  `filter_hits` in [`lcsc/api.py`](kicad_lcsc_suite/lcsc/api.py); the widget is
-  [`lcsc/facetfilter.py`](kicad_lcsc_suite/lcsc/facetfilter.py). Filtering is **OR within an
-  attribute, AND across attributes**.
-- **Type / JLC Stock / LCSC Params columns, or BOM prices** →
-  [`lcsc/details.py`](kicad_lcsc_suite/lcsc/details.py) builds the detail mapping;
+  `filter_hits` in [`lcsc/api.py`](lcsc_suite/lcsc/api.py); the widget is
+  [`ui/explorer/facets.py`](lcsc_suite/ui/explorer/facets.py). Filtering is
+  **OR within an attribute, AND across attributes**.
+- **Type / JLC Stock / LCSC Params columns** →
+  [`lcsc/details.py`](lcsc_suite/lcsc/details.py) builds the detail mapping;
   `Library.get_part_details` resolves cache → optional bulk DB → `{}` and never
-  blocks; `mainwindow.start_part_detail_refresh` fills the cache off-thread,
-  and `force=True` (what selecting a row does) refetches past the TTL.
-  The column reports **JLC assembly** stock, never LCSC retail — hence its
-  name.
-  Which endpoint owns which field is **not** arbitrary — see
-  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3 before changing a source.
-- **Imported library lands in the wrong place** →
-  [`lcsc/importer.py`](kicad_lcsc_suite/lcsc/importer.py): `LcscImporter.import_part`,
-  `register_libraries`, `_ensure_lib_table_entry`.
+  blocks. The column reports **JLC assembly** stock, never LCSC retail.
+- **BOM/CPL output** → [`fab_rules.py`](lcsc_suite/fab_rules.py) for the rules,
+  [`export.py`](lcsc_suite/export.py) for where a position and an angle come
+  from.
 - **LCSC numbers missing from the Symbol Fields Table** →
-  [`schematicexport.py`](kicad_lcsc_suite/schematicexport.py) and
-  `mainwindow.sync_schematic`. Assignment writes the *footprint*; the export
-  writes the *symbol*. It refuses to touch a schematic that eeschema has
-  open (`~<name>.kicad_sch.lck`) and never clears a number it was not told
-  to — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §7.
+  [`schematicexport.py`](lcsc_suite/schematicexport.py). Assignment writes the
+  *footprint*; the export writes the *symbol*. It refuses to touch a schematic
+  eeschema has open and never clears a number it was not told to.
 - **A board that looks unassigned while the schematic has every number** →
-  the opposite direction, [`schematicimport.py`](kicad_lcsc_suite/schematicimport.py) and
-  `mainwindow.import_from_schematic`. Neither direction is automatic; both
-  are toolbar buttons that show a per-reference diff and overwrite the other
-  side only once confirmed.
-- **Gerber/BOM/CPL output** → [`fabrication.py`](kicad_lcsc_suite/fabrication.py); rotation
-  and offset fixes are `fix_rotation` / `fix_position`.
-- **Part list columns/colours** → [`datamodel.py`](kicad_lcsc_suite/datamodel.py) plus
-  [`dataview_highlight.py`](kicad_lcsc_suite/dataview_highlight.py) for match highlighting.
-- **A setting** → the key lives in `settings.json` (gitignored, written to
-  `PLUGIN_PATH`); the dialog is [`settings.py`](kicad_lcsc_suite/settings.py); defaults and
-  migrations are in `JLCPCBTools.load_settings`
-  ([mainwindow.py:1365](kicad_lcsc_suite/mainwindow.py#L1365)).
+  [`schematicimport.py`](lcsc_suite/schematicimport.py). Neither direction is
+  automatic; both are toolbar buttons that show a per-reference diff and
+  overwrite the other side only once confirmed.
+- **A setting, or where the databases are** →
+  [`config.py`](lcsc_suite/config.py). Both live in per-user directories, and
+  `adopt_data_directory` explains why deriving either from a module's location
+  is a bug that has already bitten twice.
 
 ## Invariants worth knowing before you edit
 
-**Threading.** Every network call runs on a worker thread. Results reach the
-UI in exactly one of two ways, and mixing them up is a crash:
+**Threading.** Every network call runs on a worker thread and results reach the
+UI through a **queued Qt signal**, never by touching a widget directly. Workers
+must never touch `store`, `library` or any widget.
 
-- `wx.PostEvent(self.parent, SomeEvent(...))` with events from
-  [`events.py`](kicad_lcsc_suite/events.py) — used by `library.py` and `mainwindow.py`.
-- `wx.CallAfter(self._handler, token, ...)` — used throughout
-  `lcsc/explorer.py`.
+**Staleness tokens.** Qt severs a connection to a destroyed receiver, so "the
+window is gone" needs no guard. "These results are for the previous search"
+still does — `ui/explorer/tasks.py` keeps the tokens, and any new async fetch
+needs one.
 
-Workers must never touch `store`, `library` or any widget directly.
+**The board is written through `kicad_bridge` and nowhere else**, and every
+write proves itself by re-reading after the commit is pushed. Four IPC traps
+make that non-negotiable; the plan's §2 lists them.
 
-**Staleness tokens.** `LcscExplorerDialog` keeps `_search_token`,
-`_detail_token`, `_retail_token`; `_cancel_pending()` bumps all three so
-in-flight workers drop their results. `mainwindow` uses
-`assembly_enrichment_generation` for the same purpose. Any new async fetch
-needs the same guard, plus an `_alive()` check — a modeless dialog can be
-destroyed while a fetch is in flight, and a `CallAfter` landing on a deleted
-C++ object raises `RuntimeError` inside wx's event loop.
-
-**wx assertions are fatal here.** KiCad's bundled wxWidgets has assertions
-enabled and wxPython raises them as `wx._core.wxAssertionError`, so one bad
-call aborts `_build_ui()` part-way and the user gets a blank or missing
-window with no error. Known trigger: `wx.ALIGN_CENTER_VERTICAL` on a
-**vertical** `BoxSizer` (and the horizontal mirror). Audit alignment flags
-against sizer orientation whenever you add UI.
-
-**Column widths don't stick before the window is shown.** Native DataView
-discards widths set during construction. `LcscExplorerDialog` restates them
-in `_on_first_shown`, deferred via `wx.CallAfter`.
-
-**Dark mode.** KiCad follows the desktop appearance. Colours must come from
-[`lcsc/theme.py`](kicad_lcsc_suite/lcsc/theme.py) (`colour()`, `stock_colour()`,
-`card_background()`), not literals — a value tuned on white turns to mud on
-dark.
-
-**Import order in standalone probes.** Import plugin modules *before*
-creating `wx.App`; `__init__.py` calls `JLCPCBPlugin().register()`, which
-asserts if a `wx.App` already exists outside KiCad.
+**Dark mode.** Colours come from [`ui/theme.py`](lcsc_suite/ui/theme.py), never
+literals. A value tuned on white turns to mud on dark.
 
 **Degrade, never crash.** Every storefront endpoint here is unofficial and may
-403, rate-limit or change shape. Failures render as `?` / `…` and log; they
-must not raise into the event loop. `?` means "nobody answered" and `0` means
-"confirmed none" — never let one render as the other. Any new endpoint goes
-through `_get_json`/`fetch_image` so `_HostBreaker` can stop a doomed fill
-after three failures instead of after a hundred.
-
-**Posting from a worker.** Use `self._post(handler, *args)`, not a bare
-`wx.CallAfter`. `wx.CallAfter` raises on the *worker* thread once the dialog
-is gone — nothing catches it there and it lands as a traceback in KiCad's
-console. `_post` checks `_alive()`, swallows the teardown race, and returns
-`False` so the loop can stop pulling work it cannot deliver.
+403, rate-limit or change shape. Failures render as `?` / `…` and log; they must
+not raise into the event loop. **`?` means "nobody answered" and `0` means
+"confirmed none"** — never let one render as the other. Any new endpoint goes
+through `_get_json`/`fetch_image` so `_HostBreaker` can stop a doomed fill after
+three failures instead of after a hundred.
 
 ## Working here
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install pytest ruff   # not preinstalled
-.venv/bin/python -m pytest        # testpaths: tests/, common/, dblib/
-.venv/bin/ruff check && .venv/bin/ruff format --check
+./install.sh                              # bootstraps .venv, links the plugin
+.venv/bin/python -m pytest -q             # 770 tests
+.venv/bin/ruff check --extend-exclude=lib && .venv/bin/ruff format --check --exclude lib
 ```
 
-Verify GUI changes **with a screenshot**, in both halves.
-
-*New Qt app* — renders offscreen, no display and no permissions needed:
+Every test file must also pass **on its own**:
 
 ```bash
-./install.sh --app                              # bootstraps .venv once
-.venv/bin/python scripts/qt_probe.py --all      # writes docs/screens/*.png
+for f in tests/test_*.py; do .venv/bin/python -m pytest -q "$f" >/dev/null || echo "FAILS ALONE: $f"; done
 ```
 
-Commit the updated PNG in the same commit as the UI change. A geometry dump
-(`--geometry`) is a supplement, never a substitute — mistaking one for the
-other is the reason this migration exists.
+Verify GUI changes **with a screenshot**:
+
+```bash
+.venv/bin/python scripts/qt_probe.py --all --theme both   # writes docs/screens/*.png
+```
+
+Commit the updated PNGs in the same commit as the UI change. A geometry dump
+(`--geometry`) is a supplement, never a substitute — mistaking one for the other
+is the reason this migration happened.
 
 *Board writes* — a screenshot says nothing about whether the board changed, and
 the fixture cannot find every way the real API differs from it. After touching
@@ -289,42 +213,20 @@ the fixture cannot find every way the real API differs from it. After touching
 
 Phase 3 found trap 4 this way, after two phases of green fixture tests.
 
-*Legacy wx plugin* — build the dialog against a stub parent with **KiCad's own
-interpreter**, because that is the wx build whose assertions matter:
-
-```bash
-/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 scripts/gui_probe.py explorer
-```
-
-wx windows can be captured offscreen too (`wx.WindowDC` → `wx.Bitmap`), and
-`screencapture` does work on the current dev machine. But a macOS screenshot of
-a **wx** window says nothing about Windows, because wx wraps native controls —
-which is precisely the limitation Qt fixes. Recipe in
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#verifying-gui-changes-headlessly).
-
-Check reachability before blaming the UI — LCSC 403s whole networks:
-
-```bash
-curl -o /dev/null -w '%{http_code}\n' 'https://wmsc.lcsc.com/ftps/wm/product/detail?productCode=C1592'
-```
-
 ## Things that look like bugs but aren't
 
 - `pyproject.toml` says `requires-python = ">=3.10"` and lists `requests`,
-  `click`, … — that is the **db_build tooling's** metadata. The wx plugin is
-  still 3.9 and dependency-free.
-- `.gitignore` does not ignore `lib/`, contradicting upstream. Deliberate:
-  this fork vendors code in `kicad_lcsc_suite/lib/`.
-- `jlcpcb/` in the working tree holds the downloaded databases (~750 MB) and
-  the small `partcache.db`, and is gitignored. Deleting the bulk DB does **not**
-  trigger a re-download any more — it is optional, and the Download toolbar
-  button is the only thing that fetches it.
-- `search_escape.py`, `partselector_columns.py` and
-  `datamodel.PartSelectorDataModel` have no callers. They are the remains of
-  upstream's part selector, which the LCSC Explorer replaced. Left in place to
-  keep the upstream diff small; delete them only as a deliberate cleanup.
-- `settings.json` at the repo root is runtime state, gitignored via
-  `/settings.json`.
-- The project name is still `Kicad-jlcpcb-tools` in `pyproject.toml` and the
-  main window title still says "JLCPCB Tools"; only the plugin's toolbar
-  entry was renamed to "LCSC Suite" so it can coexist with upstream.
+  `click`, … — that is the **db_build tooling's** metadata, not the app's.
+- `pyproject.toml` still pins `UP006/UP007/UP035/UP045` off. They were off for
+  KiCad's Python 3.9, which nothing here runs in any more; turning them back on
+  is a deliberate, separate change, not a drive-by.
+- `.gitignore` does not ignore `lib/`, contradicting upstream. Deliberate: this
+  fork vendors code in `lcsc_suite/lib/`.
+- `jlcpcb/` in the working tree holds a downloaded parts database (~750 MB) and
+  is gitignored. It is optional — the Download toolbar button is the only thing
+  that fetches it.
+- The project name is still `kicad-lcsc-suite` in `pyproject.toml` while the
+  PCM identifier is `com.lcscsuite.plugin`. Different namespaces.
+- `docs/CODE-REVIEW.md` names paths under `kicad_lcsc_suite/` that no longer
+  exist. Deliberate: it records a review of a stated baseline, and rewriting its
+  paths would misrepresent what was reviewed.

@@ -2,7 +2,7 @@
 
 import pytest
 
-from kicad_lcsc_suite.bom_estimation import (
+from lcsc_suite.bom_estimation import (
     DEFAULT_PRICING,
     AssemblyPricing,
     build_bom_estimate_view_model,

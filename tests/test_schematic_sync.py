@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from kicad_lcsc_suite import schematicexport
-from kicad_lcsc_suite.schematicexport import (
+from lcsc_suite import schematicexport
+from lcsc_suite.schematicexport import (
     SchematicExport,
     find_root_schematic,
     is_open_in_editor,

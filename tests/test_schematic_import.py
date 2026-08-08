@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from kicad_lcsc_suite.schematicimport import diff_against_board, read_schematic
+from lcsc_suite.schematicimport import diff_against_board, read_schematic
 
 # The schematic-building helpers, shared with the exporter's tests: reading and
 # writing have to agree on the file format, so they are written once.

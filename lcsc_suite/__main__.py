@@ -12,7 +12,7 @@ import logging
 import sys
 
 from . import app as app_module, kicad_bridge
-from .config import Settings, legacy_settings_path
+from .config import Settings, adopt_data_directory, legacy_settings_path
 from .single_instance import SingleInstance
 
 log = logging.getLogger(__name__)
@@ -80,9 +80,12 @@ def main(argv=None) -> int:
     from .search_source import build_source
 
     settings = Settings(legacy_path=legacy_settings_path())
+    # Before any Library is built: an install that has never had a database
+    # directory configured is pointed at one it already has, and the answer is
+    # written to settings so it stops depending on where any module lives. See
+    # config.adopt_data_directory for what that dependency has already cost.
+    adopt_data_directory(settings)
     parts = PartList(board, settings=settings)
-    # The same data directory the wx plugin fills, so both halves read one part
-    # cache, one mappings table and one corrections database while they coexist.
     parts.open_libraries()
     # Named here rather than left to the controller's lazy default. Building a
     # LiveSource costs nothing — it is a namespace over lcsc/api.py — and the

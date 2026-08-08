@@ -24,7 +24,7 @@ for _mod in ["wx", "wx.dataview", "requests"]:
 
 import pytest  # noqa: E402
 
-from kicad_lcsc_suite import library as library_module  # noqa: E402
+from lcsc_suite import library as library_module  # noqa: E402
 
 
 class _FakeParent:

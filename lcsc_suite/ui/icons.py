@@ -25,22 +25,18 @@ import os
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QImage, QPixmap
 
-from ..shared import LEGACY_ROOT
 from . import theme
 
 log = logging.getLogger(__name__)
 
-#: The icon set the wx plugin already ships, reused as-is. It lives inside the
-#: legacy package because that package is what gets installed into KiCad.
-ICON_DIR = os.path.join(LEGACY_ROOT, "icons")
+#: The icon set, 55 files: the 54 the wx plugin shipped plus the ``mdi-undo``
+#: this app added. Phase 8 merged the two directories, which is why the search
+#: order that used to matter is gone.
+ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icons")
 
-#: Art this app needs and the wx plugin never had, searched *first*. New icons go
-#: here rather than into the legacy set, because Phase 8 deletes that package and
-#: anything of ours left inside it would go with it.
-APP_ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icons")
-
-#: Where :func:`icon` looks, in order.
-ICON_DIRS = (APP_ICON_DIR, ICON_DIR)
+#: Where :func:`icon` looks. A tuple still, so a second source (a user theme, a
+#: high-DPI set) is an entry rather than a rewrite.
+ICON_DIRS = (ICON_DIR,)
 
 if not os.path.isdir(ICON_DIR):
     # One missing icon is a typo and is tolerated below. The whole directory

@@ -103,6 +103,10 @@ class Library:
         configured = self.parent.settings.get("library", {}).get("data_path", "")
         if isinstance(configured, str) and configured.strip():
             return os.path.abspath(os.path.expanduser(configured.strip()))
+        # Last resort only. The app resolves this properly before constructing a
+        # Library — see config.data_directory, and the note there about what
+        # deriving a data path from a module's own location has already cost.
+        # Kept so a test or a script can build a Library with bare settings.
         return os.path.join(PLUGIN_PATH, "jlcpcb")
 
     def refresh_library_config(self):

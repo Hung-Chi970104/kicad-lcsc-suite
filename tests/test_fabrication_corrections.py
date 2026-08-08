@@ -1,23 +1,32 @@
-"""Tests for the two-pass correction matching logic in Fabrication._find_correction."""
+"""Tests for the two-pass correction matching logic in ``fab_rules``.
 
-import sys
-from unittest.mock import MagicMock
+Phase 6 split these rules out of ``fabrication.py`` so both halves could run the
+same code, and Phase 8 deleted the half that wrapped them. The rules did not
+change: this file calls ``fab_rules.find_correction`` where it used to call
+``Fabrication._find_correction``, which is what that method delegated to. Every
+test body below is the one that was written against the wx plugin.
 
-# fabrication.py imports pcbnew at module load. Stub it before the import below,
-# which is why that one is not at the top of the file. ``setdefault``, not
-# assignment: any stub will do here, and replacing one another test module
-# already installed would discard the attributes it configured on it.
-for _mod in ["pcbnew", "wx", "wx.dataview"]:
-    sys.modules.setdefault(_mod, MagicMock())
+Neither ``pcbnew`` nor ``wx`` is stubbed any more, because nothing imported here
+has ever needed either — that stub block existed only because ``fabrication.py``
+imported ``pcbnew`` at module load.
+"""
 
-from kicad_lcsc_suite.fabrication import Fabrication  # noqa: E402
+from lcsc_suite.fab_rules import find_correction
+
+
+class _Corrections:
+    """The corrections list, with the method name the tests were written for."""
+
+    def __init__(self, corrections):
+        self.corrections = corrections
+
+    def _find_correction(self, value):
+        return find_correction(self.corrections, value)
 
 
 def make_fab(corrections):
-    """Create a bare Fabrication instance with the given corrections list."""
-    fab = object.__new__(Fabrication)
-    fab.corrections = corrections
-    return fab
+    """Return something that answers ``_find_correction`` over *corrections*."""
+    return _Corrections(corrections)
 
 
 # ---------------------------------------------------------------------------

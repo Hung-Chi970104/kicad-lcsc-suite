@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "kicad-lcsc-suite"
 # The distributable here is the db_build pipeline, not the plugin: the plugin
 # is installed by install.sh or shipped through PCM, and carries its own
-# version in kicad_lcsc_suite/VERSION.
+# version in lcsc_suite/VERSION.
 version = "0.1.0"
 license = "MIT"
 description = "LCSC/JLCPCB part assignment and library import for KiCad."
@@ -153,7 +153,7 @@ ignore = [
 
 [tool.pytest.ini_options]
 # One place now. tests/conftest.py puts the repository root on sys.path, which
-# is all any of them need to import kicad_lcsc_suite, lcsc_suite or db_build.
+# is all any of them need to import lcsc_suite or db_build.
 testpaths = ["tests"]
 
 [tool.ruff.lint.flake8-pytest-style]
@@ -169,11 +169,6 @@ split-on-trailing-comma = false
 "db_build/common/filemgr.py" = ["T201"]
 "db_build/common/partsdb.py" = ["T201"]
 "db_build/common/progress.py" = ["T201"]
-# A CLI dev tool whose output is the report it prints. SHOT_DIR is module-level
-# state set once from argv: the capture happens inside each probe's `inspect`
-# closure, several frames below the parsing, and threading a directory through
-# every one of them would change signatures that exist for other reasons.
-"scripts/gui_probe.py" = ["T201", "PLW0603"]
 # The Explorer fixture capture. One-shot, run by hand, and its printed progress
 # is the only way to see a host starting to refuse partway through.
 "scripts/capture_explorer_fixture.py" = ["T201", "E402"]
@@ -199,11 +194,10 @@ split-on-trailing-comma = false
 # first so a --fixture run needs no KiCad, the second to avoid a cycle.
 "lcsc_suite/__main__.py" = ["PLC0415"]
 "lcsc_suite/config.py" = ["PLC0415"]
-# The wx import is the fallback branch of a toolkit-agnostic dispatcher.
-"kicad_lcsc_suite/events.py" = ["PLC0415"]
-# The pcbnew probe that decides whether to register the toolbar action has
-# to be a function-level import; at module level it would defeat the guard.
-"kicad_lcsc_suite/__init__.py" = ["PLC0415"]
+# events.py dispatches a worker result to whichever toolkit is listening. Its wx
+# branch is dead as of Phase 8 and the import stays deferred so removing it is a
+# deletion rather than a rewrite of the dispatcher.
+"lcsc_suite/events.py" = ["PLC0415"]
 # Toolkit stubs must be installed before the module under test is imported,
 # so these files cannot have all their imports at the top.
 "tests/*" = ["E402"]
