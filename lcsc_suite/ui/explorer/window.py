@@ -171,6 +171,16 @@ class ExplorerWindow(QDialog):
 
         self.model = ResultsModel(self)
         self._build_ui()
+        # The combo is set to the restored preference during ``_build_ui``, and
+        # it is set *before* its handler is connected — deliberately, so that
+        # restoring a preference does not count as changing it. The cost is that
+        # ``DetailPane`` never hears about it and stays in its constructor
+        # default, so a session that had chosen "Inline below" reopened with the
+        # column arrangement crammed into the inline row: previews at full width,
+        # the availability card and the parameter table clipped below the fold.
+        # Stated here rather than by connecting earlier, because the handler also
+        # writes the setting back and re-places the pane.
+        self.detail.set_layout_mode(self._detail_layout)
         self._restore_geometry()
 
         self._apply_inventory()
@@ -615,6 +625,21 @@ class ExplorerWindow(QDialog):
         self.model.forget_fetched()
         self.start_search()
 
+    def search_for(self, keyword: str) -> None:
+        """Put ``keyword`` in the box and run it.
+
+        The entry point for the gestures that arrive naming a part — a
+        double-clicked row in the part list, or ``Assign LCSC number`` over a
+        selection. Separate from :meth:`start_search` because the keyword is
+        replaced rather than read: re-targeting an open window at a different
+        footprint must not keep searching for the old one.
+        """
+        keyword = (keyword or "").strip()
+        if not keyword:
+            return
+        self.keyword.setText(keyword)
+        self.start_search()
+
     def start_search(self) -> None:
         """Kick off a background search for the current keyword."""
         keyword = self.keyword.text().strip()
@@ -858,7 +883,11 @@ class ExplorerWindow(QDialog):
             return
         self.results.setSpan(row, 0, 1, self.model.columnCount())
         self.results.setRowHeight(
-            row, inline_detail_height(self.results.viewport().height())
+            row,
+            inline_detail_height(
+                self.results.viewport().height(),
+                self.detail.sizeHint().height(),
+            ),
         )
         self.results.setIndexWidget(self.model.index(row, 0), self.detail)
 

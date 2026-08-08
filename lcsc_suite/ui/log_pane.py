@@ -72,15 +72,28 @@ class LogPane(QPlainTextEdit):
         self.setMaximumBlockCount(MAX_LINES)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.setMinimumHeight(120)
+        # A *floor*, not the size — ``MainWindow`` sets the initial split. It has
+        # to leave the per-part toolbar enough room for all ten of its buttons at
+        # the default window size, because a splitter minimum wins over the sizes
+        # asked for and the toolbar is what silently gives way: at 120 the
+        # two-line BOM estimate pushed `Save mappings` behind an extension arrow.
+        # Six lines of log is still a usable log, and the splitter drags.
+        self.setMinimumHeight(96)
 
         self._bridge = _Bridge(self)
         self._bridge.line.connect(self._append, Qt.ConnectionType.QueuedConnection)
         self.handler = LogHandler(self._bridge)
 
     def install(self, level: int = logging.INFO) -> None:
-        """Attach to the root logger."""
+        """Attach to the root logger, showing ``level`` and above.
+
+        The handler carries the level itself rather than trusting the root's.
+        Anything at all may have lowered that — ``derive_params`` calls
+        ``basicConfig(DEBUG)`` at import — and this pane is the one place where
+        the difference is visible to a user rather than to a log file.
+        """
         root = logging.getLogger()
+        self.handler.setLevel(level)
         root.addHandler(self.handler)
         if root.level > level:
             root.setLevel(level)

@@ -48,6 +48,17 @@ FILTER_DEBOUNCE_MS = 220
 #: How many attribute filters go on one row of the panel.
 FACET_COLUMNS = 2
 
+#: The panel never shrinks below this, so an empty one still reads as a panel
+#: rather than as a stray line of text.
+FACET_MIN_HEIGHT = 30
+
+#: …and never grows past this, which is a little over four rows of controls.
+#: The panel competes with the result grid for the same vertical space and the
+#: grid's rows are 140px tall, so every pixel here is most of a visible result.
+#: Four rows covers eight attributes, which is more than most categories carry;
+#: past that it scrolls, and the whole panel collapses from ``Filters ▴``.
+FACET_MAX_HEIGHT = 132
+
 
 class FacetFilter(QToolButton):
     """One attribute's values as a checkable menu, summarised on the button."""
@@ -167,18 +178,20 @@ class FacetPanel(QWidget):
         self._scroller.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        # Bounded: a category with a dozen attributes must not squeeze the
-        # result list off the screen. Tight, because every pixel here is one the
-        # grid does not get and its rows are 140px tall — the first version was
-        # 150px of mostly whitespace, which cost a whole result.
-        self._scroller.setMinimumHeight(30)
-        self._scroller.setMaximumHeight(74)
+        # Sized to the controls it actually holds, between the two bounds above,
+        # by ``_fit_height`` on every rebuild. A fixed maximum had to be tight
+        # enough for the worst case and so was wrong for every other one: at 74px
+        # a nine-attribute capacitor search showed two rows of five and hid the
+        # rest behind a scrollbar, while a three-attribute one wasted the second
+        # row on nothing. Asking the grid how tall it wants to be costs neither.
+        self._scroller.setMinimumHeight(FACET_MIN_HEIGHT)
+        self._scroller.setMaximumHeight(FACET_MAX_HEIGHT)
 
         self._body = QWidget(self._scroller)
         self._grid = QGridLayout(self._body)
         self._grid.setContentsMargins(2, 2, 2, 2)
         self._grid.setHorizontalSpacing(10)
-        self._grid.setVerticalSpacing(5)
+        self._grid.setVerticalSpacing(7)
         self._scroller.setWidget(self._body)
         outer.addWidget(self._scroller, 0, 0)
 
@@ -215,6 +228,7 @@ class FacetPanel(QWidget):
                 "library returned no parametric data for them."
             )
             self._clear_button.setEnabled(False)
+            self._fit_height()
             return
 
         self._hint.setText(
@@ -235,6 +249,34 @@ class FacetPanel(QWidget):
         for column in range(FACET_COLUMNS):
             self._grid.setColumnStretch(column * 3 + 2, 1)
         self._clear_button.setEnabled(False)
+        self._fit_height()
+
+    def _fit_height(self) -> None:
+        """Give the panel the height its controls ask for, within the bounds.
+
+        Counted from the rows rather than read off the layout. ``QGridLayout``
+        answers ``sizeHint`` with its contents margins and nothing else until the
+        event loop has processed the widgets just added to it — ``invalidate``
+        and ``activate`` both leave it at 4px — so a panel sized from the hint
+        collapsed to its minimum every time and scrolled everything but the first
+        row. Multiplying out is not an approximation here: every row holds the
+        same two kinds of widget, and the row height is asked of one of them.
+        """
+        rows = -(-len(self._controls) // FACET_COLUMNS)
+        if not rows:
+            self._scroller.setFixedHeight(FACET_MIN_HEIGHT)
+            return
+        sample = next(iter(self._controls.values()))
+        margins = self._grid.contentsMargins()
+        wanted = (
+            rows * sample.sizeHint().height()
+            + (rows - 1) * self._grid.verticalSpacing()
+            + margins.top()
+            + margins.bottom()
+        )
+        self._scroller.setFixedHeight(
+            max(FACET_MIN_HEIGHT, min(FACET_MAX_HEIGHT, wanted))
+        )
 
     def selected(self) -> dict:
         """Return ``{attribute: {values}}`` for every active constraint."""
@@ -316,6 +358,8 @@ def muted(label: QLabel) -> QLabel:
 
 __all__ = [
     "FACET_COLUMNS",
+    "FACET_MAX_HEIGHT",
+    "FACET_MIN_HEIGHT",
     "FILTER_DEBOUNCE_MS",
     "Debounce",
     "FacetFilter",

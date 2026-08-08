@@ -130,6 +130,22 @@ class LiveSource:
         """Reconcile both storefronts for one part."""
         return api.stock_report(lcsc, needed_qty=needed_qty)
 
+    def assembly_detail(self, lcsc: str) -> dict:
+        """Return JLC's raw assembly record for one part.
+
+        The Explorer works from :meth:`stock_report`, which is the reconciled
+        view of both storefronts. The Part Details dialog (§5.6) wants the
+        record itself: the fields it lists — the component code, the full name,
+        the assembly process, the minimum quantity and its price, and both price
+        ladders — are on this payload and are deliberately *not* on
+        ``StockReport``, which carries availability rather than identity.
+
+        One request, not two: ``stock_report`` has already asked for this under
+        the same cache key if the Explorer ran, and the dialog's photo ids are
+        on here as well.
+        """
+        return api.jlc_assembly_detail(lcsc)
+
     def image(self, url: str) -> Optional[bytes]:
         """Download an image, or ``None``."""
         return api.fetch_image(url)

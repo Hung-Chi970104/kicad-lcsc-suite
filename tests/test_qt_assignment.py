@@ -556,9 +556,19 @@ def test_every_handled_entry_is_a_real_menu_entry():
     assert HANDLED_ROW_MENU.issubset(ids)
 
 
-def test_the_corrections_entries_wait_for_their_dialog():
-    """Phase 5 owns them; until then they are greyed out, not removed."""
-    assert not any(entry_id.startswith("correction-") for entry_id in HANDLED_ROW_MENU)
+def test_the_corrections_entries_are_live_now_the_dialog_exists():
+    """Phase 5 brought the Corrections dialog the three entries were waiting for.
+
+    Was the opposite assertion through Phases 3 and 4, where the entries were
+    deliberately greyed out rather than removed. Every id in the menu is now
+    answered, which is what makes ``set_row_menu_enabled`` a statement about
+    this release rather than a permanent apology.
+    """
+    assert {
+        "correction-by-reference",
+        "correction-by-package",
+        "correction-by-name",
+    } <= set(HANDLED_ROW_MENU)
 
 
 def test_the_controller_declares_which_entries_are_live(controller):
@@ -583,8 +593,14 @@ def test_the_row_menu_dispatches_to_the_controller(controller, board):
 
 
 def test_an_unhandled_entry_is_ignored_rather_than_raising(controller):
-    """The menu disables them, but the signal is public and takes any id."""
-    controller.window.row_menu_triggered.emit("correction-by-reference", [ASSIGNED])
+    """The signal is public and takes any id, including one no menu emits.
+
+    ``correction-by-reference`` used to be the example here; since Phase 5 it
+    opens a dialog, and a *modal* one, so emitting it in a test hangs the run
+    rather than failing it. An id that is in no menu is what this was always
+    testing for.
+    """
+    controller.window.row_menu_triggered.emit("no-such-entry", [ASSIGNED])
 
 
 # --- exclusions, now on the controller -------------------------------------

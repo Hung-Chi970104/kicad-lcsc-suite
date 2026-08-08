@@ -87,7 +87,12 @@ class StockCard(QFrame):
         self._count: Optional[int] = None
         self._lines: list[str] = []
         self._pending = True
-        self.setMinimumSize(168, 118)
+        # 168 wide left 144 for text after the padding, and the footnotes are
+        # what did not fit: "what JLC can place on a board" rendered as "what
+        # JLC can place on a…", which says the opposite of nothing but not much
+        # more. Sized to the longer of the two footnotes rather than to a round
+        # number, because that string is the constraint.
+        self.setMinimumSize(196, 118)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
     def set_pending(self) -> None:
@@ -215,8 +220,14 @@ class DetailPane(QWidget):
         self._avail_layout = QHBoxLayout(self._availability)
         self._avail_layout.setContentsMargins(6, 4, 6, 6)
         self._avail_layout.setSpacing(6)
-        self._avail_layout.addWidget(self.jlc_card, 0)
-        self._avail_layout.addWidget(self.retail_card, 0)
+        # Top, not centred. The card is a fixed 118px tall inside a group that
+        # the previews stretch to ~200, so left to itself it floated in the
+        # middle with a band of nothing above and below and its headline figure
+        # nowhere near the first caveat line. They are two readings of the same
+        # question and they should start on the same line.
+        top = Qt.AlignmentFlag.AlignTop
+        self._avail_layout.addWidget(self.jlc_card, 0, top)
+        self._avail_layout.addWidget(self.retail_card, 0, top)
         self._avail_layout.addWidget(self.warnings, 1)
 
         self.parameters = QTableWidget(0, 2, self)

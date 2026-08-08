@@ -49,7 +49,11 @@ from lcsc_suite.search_source import (  # noqa: E402
 )
 from lcsc_suite.shared import lcsc_api as api  # noqa: E402
 from lcsc_suite.ui.explorer.detail import library_label  # noqa: E402
-from lcsc_suite.ui.explorer.facets import FacetPanel  # noqa: E402
+from lcsc_suite.ui.explorer.facets import (  # noqa: E402
+    FACET_MAX_HEIGHT,
+    FACET_MIN_HEIGHT,
+    FacetPanel,
+)
 from lcsc_suite.ui.explorer.results import (  # noqa: E402
     COLUMN_INDEX,
     INLINE_DETAIL_MIN_PX,
@@ -391,6 +395,34 @@ def test_the_facet_panel_collects_ticks_and_clears_them(hits):
     assert panel.selected() == {}
 
 
+def test_the_facet_panel_grows_for_the_attributes_it_has():
+    """A fixed height had to suit the worst case and so suited no other one.
+
+    At 74px a nine-attribute capacitor search showed two rows of five and hid
+    the rest behind a scrollbar, which is the complaint that opened Phase 6.
+    Now it counts its rows — bounded at both ends, because the panel competes
+    with a result grid whose rows are 140px tall.
+    """
+    panel = FacetPanel()
+
+    def height_for(count: int) -> int:
+        panel.set_facets({f"Attribute {i}": [("a", 1), ("b", 2)] for i in range(count)})
+        return panel._scroller.height()
+
+    two, four, nine, twenty = (height_for(n) for n in (2, 4, 9, 20))
+    assert two == FACET_MIN_HEIGHT + 1 or two < four, "one row is not the tallest"
+    assert four > two, "four attributes need a second row and did not get one"
+    assert nine > four, "nine attributes must be taller than four"
+    assert nine == twenty == FACET_MAX_HEIGHT, "the cap is not holding"
+
+
+def test_an_empty_facet_panel_does_not_reserve_a_row():
+    """A search with no parametric data should cost the grid nothing."""
+    panel = FacetPanel()
+    panel.set_facets({})
+    assert panel._scroller.height() == FACET_MIN_HEIGHT
+
+
 def test_a_facet_button_summarises_rather_than_listing_everything(hits):
     """Five ticked values elide into an unreadable run; a count does not."""
     panel = FacetPanel()
@@ -724,15 +756,101 @@ def test_opening_the_explorer_twice_retargets_one_window(tmp_path, source):
 def test_the_keyword_is_seeded_from_a_uniform_selection(tmp_path, source):
     """A mixed selection seeds nothing rather than picking one arbitrarily."""
     controller = _controller(tmp_path, source)
-    values = {view.reference: view.value for view in controller.board.footprints()}
-    uniform = [ref for ref, value in values.items() if value == "100nF"][:2]
-    if uniform:
-        explorer = controller.build_explorer(uniform)
-        assert explorer.keyword.text() == "100nF"
-        explorer.close()
+    views = {view.reference: view for view in controller.board.footprints()}
+    # Same value *and* same package: "100nF 0402" and "100nF 0603" are two
+    # different searches, so agreeing on the value alone is not agreement.
+    keywords: dict[str, list[str]] = {}
+    for reference in views:
+        keywords.setdefault(controller.search_keyword([reference]), []).append(
+            reference
+        )
+    uniform = next(refs for key, refs in keywords.items() if key and len(refs) >= 2)
+    explorer = controller.build_explorer(uniform[:2])
+    assert explorer.keyword.text() == controller.search_keyword(uniform[:1])
+    explorer.close()
     mixed = controller.build_explorer(["G1", "R1"])
     assert mixed.keyword.text() == ""
     mixed.close()
+    controller.window.close()
+
+
+def test_the_keyword_carries_the_package_not_just_the_value(tmp_path, source):
+    """Seed with the package too: `1uF` is a catalogue, `1uF 0805` is a search.
+
+    The wx plugin's ``select_part`` rule. A value on its own matches fifteen
+    thousand parts, which is a result list nobody scrolls.
+    """
+    controller = _controller(tmp_path, source)
+    views = {view.reference: view for view in controller.board.footprints()}
+    capacitor = next(
+        view
+        for view in views.values()
+        if view.reference.startswith("C") and "Metric" in view.footprint
+    )
+    keyword = controller.search_keyword([capacitor.reference])
+    assert keyword.startswith(capacitor.value)
+    assert keyword.split()[-1].isdigit(), f"no package token in {keyword!r}"
+    controller.window.close()
+
+
+def test_a_resistor_value_is_seeded_with_the_ohm_sign(tmp_path, source):
+    """390R, 390r and 390o are all how a schematic spells 390Ω."""
+    controller = _controller(tmp_path, source)
+
+    class _View:
+        reference = "R99"
+        footprint = "R_0402_1005Metric"
+        value = "390R"
+
+    assert controller._keyword_for(_View()) == "390Ω 0402"
+    _View.value = "390"
+    assert controller._keyword_for(_View()) == "390Ω 0402"
+    _View.reference = "C99"
+    assert controller._keyword_for(_View()) == "390 0402", "only resistors get Ω"
+    controller.window.close()
+
+
+def test_double_clicking_a_part_searches_the_explorer_for_it(tmp_path, source):
+    """The complaint that opened Phase 6: nobody memorises LCSC numbers.
+
+    A double-click used to open a text field asking for a number. It opens the
+    catalogue with the row's own value and package already searched.
+    """
+    controller = _controller(tmp_path, source)
+    reference = next(
+        view.reference
+        for view in controller.board.footprints()
+        if controller.search_keyword([view.reference])
+    )
+    expected = controller.search_keyword([reference])
+
+    controller.window.select_references([reference])
+    controller.window.part_activated.emit([reference])
+
+    explorer = controller.explorer
+    assert explorer is not None, "the double-click opened no Explorer"
+    assert explorer.keyword.text() == expected
+    # Not equality: "Auto-select alike" is on by default, so clicking one
+    # capacitor targets every identical one — which is the point of it.
+    assert reference in explorer.references
+    explorer.close()
+    controller.window.close()
+
+
+def test_the_toolbar_icon_does_not_replace_a_search_already_on_screen(tmp_path, source):
+    """Keep the two asks apart: open the catalogue, versus search for a row."""
+    controller = _controller(tmp_path, source)
+    controller.open_explorer()
+    explorer = controller.explorer
+    explorer.keyword.setText("SS34")
+
+    controller.window.select_references(["C1"])
+    controller.open_explorer()  # the toolbar icon: no search argument
+    assert explorer.keyword.text() == "SS34"
+
+    controller.open_explorer(search=True)  # the double-click
+    assert explorer.keyword.text() == controller.search_keyword(["C1"])
+    explorer.close()
     controller.window.close()
 
 

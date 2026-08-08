@@ -166,14 +166,39 @@ def test_every_part_button_fits_without_an_extension_arrow(window):
     """
     window.show()
     window.resize(1300, 772)
+    assert _hidden_part_buttons(window) == []
+
+
+def test_the_buttons_still_fit_once_the_estimate_has_two_lines(window):
+    """The status line grows when there is an estimate, and the toolbar pays.
+
+    Phase 5 turned "BOM Estimate (5 boards): no assigned BOM parts" into two
+    lines with a cost breakdown under it. Those 22px came straight out of the
+    toolbar's budget and put ``Save mappings`` behind an extension arrow — and
+    the test above did not catch it, because a bare ``MainWindow`` never has an
+    estimate to show. Setting the text is what closes that gap.
+    """
+    window.show()
+    window.resize(1300, 772)
+    window.summary_label.setText(
+        "BOM Estimate (5 boards): Mode Economic | Total $263.57 | Per board "
+        "$52.71 | Triggers none | Missing prices 7\nDirect BOM Cost: $218.09 | "
+        "Fixed $37.51 (extended: $24.32, setup: $8.12, stencil: $1.52, tht: "
+        "$3.55) | Assembly $7.97 (smt: 1210 joints, tht: 370 joints)"
+    )
+    QApplication.processEvents()
+    assert _hidden_part_buttons(window) == []
+
+
+def _hidden_part_buttons(window) -> list:
+    """Return the labels of any per-part buttons Qt has hidden behind the arrow."""
     buttons = [
         button
         for button in window.part_toolbar.findChildren(QToolButton)
         if button.objectName() != "qt_toolbar_ext_button"
     ]
     assert len(buttons) == 10
-    hidden = [button.text() for button in buttons if not button.isVisible()]
-    assert hidden == []
+    return [button.text() for button in buttons if not button.isVisible()]
 
 
 def test_every_toolbar_button_has_its_icon(window):

@@ -76,16 +76,20 @@ INLINE_DETAIL_MAX_SHARE = 0.62
 INLINE_DETAIL_MIN_PX = 240
 
 
-def inline_detail_height(viewport_height: int) -> int:
+def inline_detail_height(viewport_height: int, wanted: int = 0) -> int:
     """Return the height the inline detail row should take.
 
     The wx version worked in whole rows, because its ``SetRowHeight`` applied to
     every row at once and the pane had to be built out of a whole number of
     140px placeholders. A ``QTableView`` sizes rows individually, so this is
     just a clamp.
+
+    ``wanted`` is the pane's own size hint, and passing it is what stops the row
+    being 400px of which the bottom 110 are empty. The constant remains as the
+    ceiling: a pane that asks for more than that is asking for the whole grid.
     """
-    wanted = int(viewport_height * INLINE_DETAIL_MAX_SHARE)
-    return max(INLINE_DETAIL_MIN_PX, min(INLINE_DETAIL_PX, wanted))
+    ceiling = min(INLINE_DETAIL_PX, int(viewport_height * INLINE_DETAIL_MAX_SHARE))
+    return max(INLINE_DETAIL_MIN_PX, min(wanted or INLINE_DETAIL_PX, ceiling))
 
 
 #: Grid text for a cell not yet fetched, versus one where the endpoint answered

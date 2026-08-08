@@ -66,7 +66,14 @@ import os
 import re
 from typing import Callable, Iterable, Optional, Protocol, Sequence
 
+from .shared import fab_rules
+
 log = logging.getLogger(__name__)
+
+#: KiCad's "drill/place origin", the one a CPL measures from. The enum lives in
+#: a generated protobuf module, and naming the value here keeps that import in
+#: one place — it is the only thing this module wants from it.
+BOARD_ORIGIN_DRILL = 2
 
 #: Field names that have carried an LCSC number over the years. Matches
 #: ``schematicexport.LCSC_FIELD_NAMES`` and ``footprint_helpers.get_lcsc_value``
@@ -202,6 +209,14 @@ class Board(Protocol):
 
     def set_exclude_from_pos(self, states: dict) -> Sequence[FootprintView]: ...
 
+    # Placement geometry, read only when a CPL is written. Deliberately not on
+    # :class:`FootprintView`: both cost a round trip apiece and the part list
+    # refreshes on every assignment, so putting them in the snapshot would make
+    # every reload pay for a file nobody has asked for yet.
+    def origin_nm(self) -> tuple: ...
+
+    def pad_centers_nm(self) -> dict: ...
+
 
 # ---------------------------------------------------------------------------
 # Shared write plumbing
@@ -234,6 +249,30 @@ class _Board:
 
     def _read_footprints(self) -> Iterable[FootprintView]:  # pragma: no cover
         raise NotImplementedError
+
+    # -- placement geometry, for the CPL ------------------------------------
+
+    def origin_nm(self) -> tuple:  # pragma: no cover - backends override
+        """Return the drill/place origin in integer nanometres.
+
+        Every CPL coordinate is measured from here, and it is *not* the board
+        origin: it is the one KiCad calls "drill/place origin", which a designer
+        sets to the corner the assembler will index from. Unset, it is ``(0, 0)``
+        and the two are the same, which is why getting this wrong is invisible on
+        most boards and shifts every row on the ones that matter.
+        """
+        return (0, 0)
+
+    def pad_centers_nm(self) -> dict:  # pragma: no cover - backends override
+        """Return ``{reference: (x, y)}``, the centre of each footprint's pads.
+
+        The middle of the merged bounding box of every pad, which is where a
+        placement machine puts its nozzle — not the footprint's origin, which is
+        wherever the library author put it. A footprint with no pads is absent
+        from the mapping and the caller falls back to the origin, as
+        ``fabrication.get_position`` does.
+        """
+        return {}
 
     # -- writing ------------------------------------------------------------
 
@@ -533,6 +572,51 @@ class _Ipc(_Board):
         except KeyError:
             raise BridgeError(f"No footprint {reference!r} on this board") from None
 
+    def origin_nm(self) -> tuple:
+        """Read KiCad's drill/place origin."""
+        origin = self._board.get_origin(BOARD_ORIGIN_DRILL)
+        return (int(origin.x), int(origin.y))
+
+    def pad_centers_nm(self) -> dict:
+        """Read every footprint's pad-bounding-box centre, in one round trip.
+
+        ``get_item_bounding_box`` accepts a sequence, and it is asked once for
+        every pad on the board rather than once per footprint: the boards this
+        is for have a hundred-odd footprints and four hundred-odd pads, and a
+        request apiece is four hundred round trips to build one CSV.
+
+        KiCad computes the boxes, which matters more than the saved calls —
+        a pad's outline is a padstack with per-layer shapes, chamfers and
+        custom primitives, and the alternative to asking is reimplementing all
+        of that and being subtly wrong about the ones that are hard.
+        """
+        if not self._live:
+            list(self._read_footprints())
+        pads: list = []
+        owners: list = []
+        for reference, footprint in self._live.items():
+            for pad in footprint.definition.pads:
+                pads.append(pad)
+                owners.append(reference)
+        if not pads:
+            return {}
+        boxes = self._board.get_item_bounding_box(pads)
+        if not isinstance(boxes, list):
+            boxes = [boxes]
+        grouped: dict = {}
+        for reference, box in zip(owners, boxes):
+            if box is None:
+                continue
+            grouped.setdefault(reference, []).append(
+                (int(box.pos.x), int(box.pos.y), int(box.size.x), int(box.size.y))
+            )
+        centers = {}
+        for reference, items in grouped.items():
+            center = fab_rules.box_center(items)
+            if center is not None:
+                centers[reference] = center
+        return centers
+
     # -- commits ------------------------------------------------------------
 
     def _begin(self):
@@ -741,6 +825,10 @@ class _FixtureFootprint:
     orientation_deg: float = 0.0
     pad_count: int = 2
     has_tht: bool = False
+    #: Pad bounding boxes as ``(x, y, w, h)`` in nanometres, when the fixture
+    #: records them. Empty means "this footprint has no pads to measure", and
+    #: the CPL falls back to the origin exactly as it does on a real board.
+    pad_boxes: tuple = ()
 
     def lcsc_field(self) -> Optional[_FixtureField]:
         """Return the field an LCSC number lives in, if there is one."""
@@ -773,12 +861,14 @@ class FixtureBoard(_Board):
         footprints: Sequence[_FixtureFootprint],
         info: BoardView,
         honour_footprint_writes: bool = True,
+        origin_nm: tuple = (0, 0),
     ) -> None:
         super().__init__()
         self._committed = {fp.reference: fp for fp in footprints}
         self._order = [fp.reference for fp in footprints]
         self._info = info
         self._honour = honour_footprint_writes
+        self._origin_nm = (int(origin_nm[0]), int(origin_nm[1]))
         self._draft: dict = {}
         #: Staged by ``_commit``, made visible by ``_push``. See trap 4.
         self._pending: dict = {}
@@ -835,8 +925,12 @@ class FixtureBoard(_Board):
                     orientation_deg=float(row.get("orientation_deg", 0.0)),
                     pad_count=int(row.get("pad_count", 2)),
                     has_tht=bool(row.get("has_tht", False)),
+                    pad_boxes=tuple(
+                        tuple(int(n) for n in box) for box in row.get("pad_boxes", ())
+                    ),
                 )
             )
+        kwargs.setdefault("origin_nm", tuple(board.get("origin_nm", (0, 0))))
         return cls(footprints, info, **kwargs)
 
     # -- reading ------------------------------------------------------------
@@ -880,6 +974,17 @@ class FixtureBoard(_Board):
                 pad_count=row.pad_count,
                 has_tht=row.has_tht,
             )
+
+    def origin_nm(self) -> tuple:
+        return self._origin_nm
+
+    def pad_centers_nm(self) -> dict:
+        centers = {}
+        for reference in self._order:
+            center = fab_rules.box_center(self._committed[reference].pad_boxes)
+            if center is not None:
+                centers[reference] = center
+        return centers
 
     def _live_footprint(self, reference: str):
         if reference not in self._committed:
