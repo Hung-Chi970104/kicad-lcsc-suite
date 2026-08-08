@@ -1583,6 +1583,69 @@ None of these was caught by a test, and two of them were shipped by Phase 5.
   sets of files. That is deliberate, and it means the two can overwrite each
   other's output — which is correct, because they produce the same bytes.
 
+### Between 6 and 7 — the detail pane belonged to the grid, and the grid deleted it
+
+Four bugs the user reported after Phase 6, all of the Explorer's detail pane, all
+one cause. Worth recording in full because the mechanism is not obvious from
+either the Qt docs or the crash, and because it is a trap for anything else that
+ever puts a long-lived widget inside a view.
+
+**`setIndexWidget` gives the widget to the view, and the view deletes what it
+owns.** Not when the view is destroyed — three times a session:
+
+* `setIndexWidget(index, None)` calls `deleteLater()` on what it displaces;
+* removing the row releases its editors, index widgets among them;
+* a model reset does the same to all of them.
+
+`DetailPane` was passed straight to `setIndexWidget`, so the "Inline below"
+layout lent the pane to the grid and then, at the next repopulate, deleted it.
+What the user saw:
+
+| Reported as | Actually |
+|---|---|
+| Switching JLC → LCSC retail with a row expanded loses the pane, and it never comes back | `apply_filters` closes the pane; closing it removed the row, and the row took the pane |
+| Switching to `Side panel` while inline is open, then no row will expand | the line that took the pane out of one host before the other claimed it *was* `setIndexWidget(…, None)` |
+| Clicking another part in inline mode crashes the whole plugin | below |
+| No way to collapse the pane again | there genuinely was no gesture for it |
+
+The crash needed a second fault on top of the first. **`beginRemoveRows` reaches
+the selection model before it returns**, and the view answers by re-emitting
+`selectionChanged` for a selection nobody moved — straight back into
+`_on_row_selected`, which called the placement code again *underneath itself*.
+The inner call installed the pane in a fresh host; the outer call, resuming with
+its own stale `row`, handed that host to `setIndexWidget(…, None)`. The pane was
+still inside it. Qt then painted through the freed pointer, which is a segfault,
+not a Python traceback — "Python quit unexpectedly", no log line, nothing.
+
+Three changes, and each one is load-bearing:
+
+1. **The view never owns the pane.** It owns a throwaway `_inline_host` the pane
+   sits inside, and `_detach_inline` reparents the pane back to the splitter
+   *before* anything is allowed to delete the host. Every path that closes,
+   moves or repopulates goes through that one method.
+2. **A `_placing` guard** makes the re-entrant `selectionChanged` a no-op, so
+   there is only ever one placement in flight.
+3. **The selection is read after the detach, never before.** Removing the old
+   placeholder shifts every row beneath it up by one and Qt renumbers the
+   selection to match, so a row index taken beforehand anchored the pane one part
+   too low. `ResultsModel.set_inline_row` translates a display row to a hit index
+   for the same reason.
+
+Then the missing gesture: **clicking the open row again collapses it**, the
+second click that closes an expanded row in JLCPCB's parts library. `clicked`
+fires on *release*, after `selectionChanged` has already opened the pane on
+press, so the flag that tells "this gesture opened it" apart from "this gesture
+is a second click" is cleared by an event filter on the viewport at press time —
+the only moment the question can be asked. Leaving it to be consumed by the click
+instead would eat the first click on a row reached with the arrow keys.
+
+`shiboken6.isValid` is what the ten new tests assert on: a deleted C++ object
+leaves a live Python wrapper behind, so every check phrased in terms of
+visibility passes right up until it raises. New screen **`explorer-reopened`**
+walks the whole crash path — inline, expand, switch inventory, expand a
+different part — because a pane that did not survive cannot be photographed.
+763 → 773 tests.
+
 ### Resume here → Phase 7
 
 Read this whole §10, then `git log --oneline` for the phase commits. Every screen

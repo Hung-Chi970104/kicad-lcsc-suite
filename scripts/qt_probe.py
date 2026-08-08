@@ -380,6 +380,36 @@ def screen_explorer_inline(context) -> QWidget:
     return explorer
 
 
+def screen_explorer_reopened(context) -> QWidget:
+    """Build the Explorer after the sequence that used to destroy the pane.
+
+    Not a layout — a *history*. Every earlier explorer screen builds its pane
+    once and photographs it, and the four bugs the user reported all needed the
+    pane to be placed a second time: switch inventory with a row expanded, or
+    switch layout, or simply click another part, and the grid deleted the widget
+    it had been lent. The window then held a destroyed object, so nothing
+    reopened, and in the inline layout the view painted through the dangling
+    pointer and took the process with it.
+
+    So this screen walks that path — inline, expand, switch inventory, expand a
+    different part — and the render is the assertion: a pane that did not
+    survive cannot be photographed.
+    """
+    explorer = _explorer(context)
+    explorer.detail_layout_choice.setCurrentIndex(1)
+    explorer.select_row(1)
+    settle(700)
+    explorer.inventory.setCurrentIndex(1)  # JLC assembly → LCSC retail
+    settle(700)
+    explorer.select_row(3)
+    settle(900)
+    rows = explorer.results.selectionModel().selectedRows()
+    if rows:
+        explorer.results.scrollTo(rows[0], explorer.results.ScrollHint.PositionAtTop)
+        settle(200)
+    return explorer
+
+
 def screen_explorer_retail(context) -> QWidget:
     """Build the Explorer on the LCSC retail inventory, sorted on it.
 
@@ -611,6 +641,7 @@ SCREENS = {
     "explorer-detail": screen_explorer_detail,
     "explorer-facets": screen_explorer_facets,
     "explorer-inline": screen_explorer_inline,
+    "explorer-reopened": screen_explorer_reopened,
     "explorer-retail": screen_explorer_retail,
     "export-summary": screen_export_summary,
     "mainwindow": screen_mainwindow,
