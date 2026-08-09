@@ -296,3 +296,27 @@ def test_scan_assembly_state_reports_joints_standard_and_extended_sets():
     assert scan.tht_joints == 15
     assert scan.smt_lcsc == {"C-SMT-STD"}
     assert scan.extended_lcsc == {"C-SMT-EXT-NOPOS"}
+
+
+def test_a_quantity_in_a_gap_takes_the_band_below_it():
+    """A gapped ladder used to price as "no price known" and drop the part.
+
+    ``details.encode_price_bands`` cannot leave a gap, but the bulk parts
+    database can, and returning ``-1.0`` for one counted a part that has a
+    price right there in the ladder under "Missing prices" and left it out of
+    the total. A break point is where the price *changes*, so below the next
+    break the previous price still stands.
+    """
+    assert get_unit_price(15, "1-9:0.30,20-:0.10") == 0.30
+    assert get_unit_price(20, "1-9:0.30,20-:0.10") == 0.10
+
+
+def test_a_quantity_below_every_band_takes_the_cheapest_start():
+    """Nothing sensible is below the first break, so the first band applies."""
+    assert get_unit_price(2, "10-99:0.30,100-:0.10") == 0.30
+
+
+def test_a_ladder_with_no_usable_band_is_still_no_price():
+    """Nobody answered, and that must not turn into a number."""
+    assert get_unit_price(5, "") == -1.0
+    assert get_unit_price(5, "garbage") == -1.0

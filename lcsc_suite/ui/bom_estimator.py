@@ -67,7 +67,11 @@ def assembly_flags(part) -> dict:
 
 
 def board_standard_context(
-    parts, sides: dict, board_count: int, force_standard: bool
+    parts,
+    sides: dict,
+    board_count: int,
+    force_standard: bool,
+    assembly_count=None,
 ) -> dict:
     """Work out whether this board prices as Standard, and which parts say so.
 
@@ -109,6 +113,7 @@ def board_standard_context(
         populated_sides=populated,
         smt_populated_sides=smt_populated,
         standard_part_refs=standard_refs,
+        assembly_count=assembly_count,
     )
 
 
@@ -204,8 +209,18 @@ class BomEstimator:
     # -- inputs ---------------------------------------------------------------
 
     def board_count(self) -> int:
-        """Return the number of boards the estimate is for."""
+        """Return the number of bare boards the estimate is for."""
         return int(self.window.boards_input.value())
+
+    def assembly_count(self) -> int:
+        """Return how many of those boards JLC populates.
+
+        Falls back to the board count for a window that predates the second
+        spin box — the probe builds trimmed windows, and an estimator that
+        raised on one would take the screenshots with it.
+        """
+        spin = getattr(self.window, "assembly_input", None)
+        return self.board_count() if spin is None else int(spin.value())
 
     def force_standard(self) -> bool:
         """Whether the user has forced Standard-mode pricing."""
@@ -234,6 +249,7 @@ class BomEstimator:
         self._details.clear()
         model = self.window.part_model
         board_count = self.board_count()
+        assembly_count = self.assembly_count()
 
         try:
             parts = list(self.parts.store.read_all() or [])
@@ -250,21 +266,26 @@ class BomEstimator:
         ]
         if not billable:
             model.set_standard_trigger_refs(set())
+            quantity = bom_view.format_quantity(board_count, assembly_count)
             self.window.set_summary_text(
-                f"BOM Estimate ({board_count} boards): "
+                f"BOM Estimate ({quantity}): "
                 f"{'no parts' if not parts else 'no assigned BOM parts'}"
             )
             return None
 
         context = board_standard_context(
-            parts, self.sides(), board_count, self.force_standard()
+            parts,
+            self.sides(),
+            board_count,
+            self.force_standard(),
+            assembly_count,
         )
         view_model = bom_view.build_bom_estimate_view_model(
-            parts, board_count, self.part_details, context
+            parts, board_count, self.part_details, context, assembly_count
         )
 
         for reference, label in bom_view.prepare_bom_price_labels(
-            parts, board_count, self.part_details
+            parts, board_count, self.part_details, assembly_count
         ).items():
             model.set_bom_price(str(reference), label)
 

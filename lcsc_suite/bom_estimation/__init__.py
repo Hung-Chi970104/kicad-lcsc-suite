@@ -14,12 +14,14 @@ from .pricing import (
     get_assembly_flags,
     get_unit_price,
     is_tht_part,
+    resolve_assembly_count,
 )
 from .view import (
     build_bom_estimate_view_model,
     build_standard_mode_context,
     format_bom_estimate_summary,
     format_part_bom_price_label,
+    format_quantity,
     prepare_bom_price_labels,
     standard_signal_reasons,
 )
@@ -36,7 +38,9 @@ __all__ = [
     "get_assembly_flags",
     "calculate_bom_estimate",
     "calculate_part_bom_cost",
+    "resolve_assembly_count",
     "format_bom_estimate_summary",
+    "format_quantity",
     "standard_signal_reasons",
     "format_part_bom_price_label",
     "build_bom_estimate_view_model",
