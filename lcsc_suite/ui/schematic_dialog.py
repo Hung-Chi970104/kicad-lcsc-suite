@@ -43,7 +43,12 @@ from . import theme
 #: enough that a dozen rows are visible before the table starts scrolling. A
 #: confirmation the user has to scroll to read the *start* of is one they will
 #: dismiss unread.
-DEFAULT_SIZE = (620, 460)
+#:
+#: The 16 is the restyle's: taller header padding and the table's new border
+#: left the fixture's eight rows overflowing by a single pixel, which spends a
+#: whole scrollbar to hide nothing and is the one outcome worse than either
+#: scrolling properly or not scrolling at all.
+DEFAULT_SIZE = (620, 460 + 16)
 
 COLUMNS = ("Reference", "Now", "Becomes", "")
 

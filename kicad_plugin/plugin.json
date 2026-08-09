@@ -1,6 +1,6 @@
 {
-  "identifier": "com.lcscsuite.plugin",
-  "name": "LCSC Suite",
+  "identifier": "com.easyassembly.plugin",
+  "name": "EasyAssembly",
   "description": "LCSC/JLCPCB part assignment, library import and BOM/CPL output",
   "runtime": {
     "type": "exec"
@@ -8,20 +8,20 @@
   "actions": [
     {
       "identifier": "open-suite",
-      "name": "LCSC Suite",
-      "description": "Open the LCSC Suite window",
+      "name": "EasyAssembly",
+      "description": "Open the EasyAssembly window",
       "show-button": true,
       "scopes": [
         "pcb"
       ],
       "entrypoint": "run.sh",
       "icons-light": [
-        "icons/lcsc-suite-24.png",
-        "icons/lcsc-suite-48.png"
+        "icons/easyassembly-24.png",
+        "icons/easyassembly-48.png"
       ],
       "icons-dark": [
-        "icons/lcsc-suite-dark-24.png",
-        "icons/lcsc-suite-dark-48.png"
+        "icons/easyassembly-dark-24.png",
+        "icons/easyassembly-dark-48.png"
       ]
     }
   ]

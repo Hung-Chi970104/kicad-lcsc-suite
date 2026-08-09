@@ -183,6 +183,9 @@ split-on-trailing-comma = false
 # The cross-platform layout gate. Its printed report is its entire output, and
 # the two properties on Divergence say what they are in one line each.
 "scripts/compare_geometry.py" = ["T201", "D102", "D103", "D105"]
+# The brand-mark renderer. Prints which files it wrote, and has to put the repo
+# root on sys.path before it can import the package that defines the mark.
+"scripts/make_brand_icons.py" = ["T201", "E402", "D103"]
 # Board access has to work with or without kipy installed (the fixture backend
 # is what CI and the tests use), so `import kipy` is deferred to the call that
 # needs it. Protocol declarations carry their contract in the class docstring.

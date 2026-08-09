@@ -28,6 +28,13 @@ from PySide6.QtCore import QStandardPaths
 
 log = logging.getLogger(__name__)
 
+#: **A storage key, not the product name.** The application is called
+#: EasyAssembly (``ui.brand.APP_NAME``); this string is half of the
+#: ``QStandardPaths`` key that every installed copy's settings — and its
+#: optional 750MB parts database — already live under. Changing it to match the
+#: brand would not migrate them; it would silently start over in an empty
+#: directory, which is indistinguishable from a first run until the user goes
+#: looking for a download they already made. See :func:`adopt_data_directory`.
 APPLICATION_NAME = "LCSC Suite"
 SETTINGS_FILENAME = "settings.json"
 

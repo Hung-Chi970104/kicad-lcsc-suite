@@ -1,4 +1,4 @@
-"""The LCSC Suite main window — the Qt port of ``mainwindow.py``'s layout.
+"""The EasyAssembly main window — the Qt port of ``mainwindow.py``'s layout.
 
 The parity target is the migration plan's §5.1, captured from the running wx
 plugin at 1300x772. Everything there is reproduced control for control, with two
@@ -13,13 +13,20 @@ deliberate differences, both from §1:
 
 Layout, top to bottom:
 
-    ┌ toolbar ── Export BOM / CPL ······················ right-hand group ┐
-    │ Boards: [5]  ☐ Force Standard  [Help]                              │
-    │ BOM Estimate (5 boards): …                                         │
-    │ ┌ part table ───────────────────────────────┐ ┌ per-part toolbar ┐ │
-    │ └───────────────────────────────────────────┘ └──────────────────┘ │
-    │ ┌ log ──────────────────────────────────────────────────────────┐  │
-    └────────────────────────────────────────────────────────────────────┘
+    ┌ identity bar ─ ◆ EasyAssembly ····· board.kicad_pcb · 93/110 assigned ┐
+    ├ toolbar ── Export BOM / CPL ······················ right-hand group ──┤
+    │ Boards: [5]  Assemble: [5]  ☐ Force Standard  [Help]                 │
+    │ BOM Estimate (5 boards): …                                           │
+    │ ┌ part table ───────────────────────────────┐ ┌ per-part toolbar ┐   │
+    │ └───────────────────────────────────────────┘ └──────────────────┘   │
+    │ ┌ log ──────────────────────────────────────────────────────────┐    │
+    └──────────────────────────────────────────────────────────────────────┘
+
+The identity bar is the only part of this window that is not the wx plugin's
+layout, and it goes in through :meth:`QMainWindow.setMenuWidget` — the one slot
+that sits *above* the toolbar area. This window has no menu bar to displace, and
+building it as a third toolbar instead would let a user drag the product name
+off the top of their window.
 
 The two schematic buttons stay **two explicit buttons**, each warning about what
 it overwrites. Board↔schematic sync is never automatic: the two sides are
@@ -43,6 +50,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -60,6 +68,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..kicad_bridge import Board
+from ..shared import bom_view
+from . import brand
 from .delegates import MatchHighlightDelegate
 from .icons import ICON_SIZE, icon
 from .log_pane import LogPane
@@ -73,13 +83,30 @@ from .models.part_table import (
 
 log = logging.getLogger(__name__)
 
-#: The wx window is 1300x772. Stated rather than derived, so the screenshots are
-#: the same size on both platforms and a parity diff means something.
-DEFAULT_SIZE = (1300, 772)
+#: The wx window is 1300x772, and this was that exactly until the identity bar
+#: went in. Stated rather than derived, so the screenshots are the same size on
+#: both platforms and a parity diff means something.
+#:
+#: **The 40 is what the restyle costs in vertical chrome, measured, not
+#: guessed**: 29px of identity bar, plus 11px the roomier toolbar padding adds
+#: across the top toolbar and the per-part one. All of it comes out of the
+#: splitter, and the first thing to run out is the ten-button per-part toolbar
+#: — which needs 516px, had 500 the moment the identity bar appeared, and put
+#: ``Save mappings`` behind an extension arrow. That is the exact regression
+#: ``LOG_HEIGHT`` below records being fixed twice already, and both
+#: ``test_every_part_button_fits_without_an_extension_arrow`` and its
+#: two-line-estimate sibling catch it.
+#:
+#: Growing the window is the fix rather than shrinking the log, because the log
+#: has already paid for two previous rounds of this and has nothing left to
+#: give: new chrome should cost the window's size, not the last pane that
+#: cannot argue back.
+DEFAULT_SIZE = (1300, 772 + 40)
 
 #: The window will not usefully shrink below this; the right-hand toolbar's
-#: labels and the table's nine columns both need the width.
-MINIMUM_SIZE = (1000, 600)
+#: labels and the table's nine columns both need the width. Raised by the same
+#: 40, so the usable floor under the new chrome is what it always was.
+MINIMUM_SIZE = (1000, 600 + 40)
 
 #: Width of the right-hand per-part toolbar. The wx original is 128px and elides
 #: "Assign LCSC number" to "Assign … number"; 152 is what it takes for all ten
@@ -99,6 +126,17 @@ PART_TOOLBAR_WIDTH = 152
 #: on a default-sized window" problem §5.1 records about the wx original, which
 #: is the one thing this toolbar was rebuilt to avoid.
 LOG_HEIGHT = 112
+
+#: Logical size of the mark in the identity bar. Level with the wordmark's
+#: cap height at the app's 10pt base size, which is what makes the two read as
+#: one lockup rather than as an icon with a label next to it.
+IDENTITY_MARK_SIZE = 18
+
+#: Row height in the part list. 22 through Phase 8, which is what wx's grid
+#: gave and is a full 4px tighter than any of the three platforms' own list
+#: metrics. The extra breathing room is the single largest reason the table
+#: stopped looking like a spreadsheet dumped into a window.
+ROW_HEIGHT = 26
 
 #: Part-list columns, in §5.1's order, with the wx plugin's widths. Defined
 #: alongside the model that fills them, so a new column cannot be added to one
@@ -137,6 +175,8 @@ class MainWindow(QMainWindow):
 
     #: Emitted when the board-count spin box settles on a new value.
     board_count_changed = Signal(int)
+    #: Emitted when the number of boards to be assembled changes.
+    assembly_count_changed = Signal(int)
     #: Emitted with the selected references whenever the selection changes.
     selection_changed = Signal(list)
     #: Emitted as ``(entry id, references)`` when a row-menu entry is chosen.
@@ -172,10 +212,11 @@ class MainWindow(QMainWindow):
 
         info = board.info()
         self.board_info = info
-        self.setWindowTitle(f"LCSC Suite — {info.name}")
+        self.setWindowTitle(f"{brand.APP_NAME} — {info.name}")
         self.resize(*DEFAULT_SIZE)
         self.setMinimumSize(*MINIMUM_SIZE)
 
+        self._build_identity_bar()
         self._build_toolbar()
         self._build_central()
         self._build_shortcuts()
@@ -196,6 +237,60 @@ class MainWindow(QMainWindow):
         self.part_table.setFocus()
 
     # -- construction -------------------------------------------------------
+
+    def _build_identity_bar(self) -> None:
+        """Build the strip above the toolbar: the mark, the name, the board.
+
+        The right-hand context is not decoration. This window and KiCad's PCB
+        editor show the same board and nothing else on screen says which of the
+        two an open board belongs to; with two projects open — the case this
+        plugin's own tests keep hitting — the title bar is the only other place
+        that distinguishes them, and on macOS it is the one users hide.
+        """
+        bar = QFrame(self)
+        bar.setObjectName("identity-bar")
+        bar.setFrameShape(QFrame.Shape.NoFrame)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(10, 5, 12, 5)
+        layout.setSpacing(7)
+
+        mark = QLabel(bar)
+        mark.setObjectName("identity-mark")
+        mark.setPixmap(brand.mark(IDENTITY_MARK_SIZE))
+        # Fixed to the *logical* size, and emphatically not `setScaledContents`:
+        # the pixmap is rendered at 3x with a device pixel ratio to match, and
+        # scaled contents ignores that ratio and stretches 54 device pixels into
+        # an 18px box, which is a smear rather than a mark.
+        mark.setFixedSize(IDENTITY_MARK_SIZE, IDENTITY_MARK_SIZE)
+        layout.addWidget(mark)
+
+        wordmark = QLabel(brand.APP_NAME, bar)
+        wordmark.setObjectName("identity-wordmark")
+        layout.addWidget(wordmark)
+        layout.addStretch(1)
+
+        context = QLabel(self.board_info.name, bar)
+        context.setObjectName("identity-context")
+        context.setProperty("role", "status")
+        context.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        layout.addWidget(context)
+        self.identity_context = context
+
+        self.identity_bar = bar
+        # The one slot above the toolbar area. See the module docstring.
+        self.setMenuWidget(bar)
+
+    def _update_identity_context(self, total: int, assigned: int) -> None:
+        """Restate the board and how much of it is assigned.
+
+        Takes the counts rather than recounting, so this can never disagree
+        with the line ``reload_parts`` logs beside it.
+        """
+        self.identity_context.setText(
+            f"{self.board_info.name} · {assigned} of {total} assigned"
+        )
 
     def _build_toolbar(self) -> None:
         """Build the single top toolbar: left group, stretch, right group."""
@@ -345,7 +440,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
     def _build_estimator_row(self, parent: QWidget) -> QWidget:
-        """Build the `Boards: · Force Standard · Help` row."""
+        """Build the `Boards: · Assemble: · Force Standard · Help` row."""
         row = QWidget(parent)
         row.setObjectName("estimator-row")
         layout = QHBoxLayout(row)
@@ -361,9 +456,39 @@ class MainWindow(QMainWindow):
         self.boards_input.setRange(5, 10000)
         self.boards_input.setSingleStep(5)
         self.boards_input.setFixedWidth(90)
+        self.boards_input.setToolTip(
+            "Bare PCBs ordered. JLC will not fabricate fewer than five."
+        )
         self.boards_input.setValue(self._setting("general", "bom_estimator_boards", 5))
         self.boards_input.valueChanged.connect(self._on_board_count_changed)
         layout.addWidget(self.boards_input)
+
+        # Its own number because JLC's two minimums are different: five boards
+        # fabricated, but as few of them populated as the user likes. Charging
+        # five boards' worth of parts for a run that assembles two overstates
+        # the largest line in the estimate by more than double.
+        layout.addWidget(QLabel("Assemble:", row))
+
+        self.assembly_input = QSpinBox(row)
+        self.assembly_input.setObjectName("assembly-input")
+        self.assembly_input.setRange(1, self.boards_input.value())
+        self.assembly_input.setFixedWidth(90)
+        self.assembly_input.setToolTip(
+            "How many of those boards JLC populates. Components and per-joint "
+            "assembly follow this number; setup, stencil and the extended-part "
+            "fee are charged once whatever it is."
+        )
+        self.assembly_input.setValue(
+            self._setting(
+                "general", "bom_estimator_assembled", self.boards_input.value()
+            )
+        )
+        self.assembly_input.valueChanged.connect(self._on_assembly_count_changed)
+        layout.addWidget(self.assembly_input)
+
+        #: The board count as it was before the last change, so the handler can
+        #: tell "these two have always agreed" from "the user separated them".
+        self._board_count = self.boards_input.value()
 
         self.force_standard = QCheckBox("Force Standard", row)
         self.force_standard.setObjectName("force-standard")
@@ -387,10 +512,10 @@ class MainWindow(QMainWindow):
 
     def estimator_summary(self, parent: QWidget) -> QLabel:
         """Build the status line under the estimator row."""
-        board_count = self.boards_input.value()
-        label = QLabel(
-            f"BOM Estimate ({board_count} boards): no assigned BOM parts", parent
+        quantity = bom_view.format_quantity(
+            self.boards_input.value(), self.assembly_input.value()
         )
+        label = QLabel(f"BOM Estimate ({quantity}): no assigned BOM parts", parent)
         label.setObjectName("estimator-summary")
         label.setProperty("role", "status")
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -404,11 +529,18 @@ class MainWindow(QMainWindow):
         table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         table.setSelectionMode(QTableView.SelectionMode.ExtendedSelection)
         table.setAlternatingRowColors(True)
+        # No cell grid. Qt draws it in both directions or neither, and what a
+        # nine-column list of parts needs is row separation, which the
+        # alternating fill above already gives — the vertical rules only chop
+        # each row into nine boxes and make the whole thing read as a
+        # spreadsheet. Done here rather than in the stylesheet because
+        # `gridline-color: transparent` still reserves the line's pixel.
+        table.setShowGrid(False)
         table.setSortingEnabled(True)
         table.setWordWrap(False)
         table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         table.verticalHeader().setVisible(False)
-        table.verticalHeader().setDefaultSectionSize(22)
+        table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
 
         header = table.horizontalHeader()
         header.setStretchLastSection(True)
@@ -759,8 +891,10 @@ class MainWindow(QMainWindow):
         self.part_model.set_rows(self.parts.rows())
         if selected:
             self.select_references(selected)
+        total = self.part_model.rowCount()
         assigned = sum(1 for row in self.part_model.rows() if row.assigned)
-        log.info("%d parts, %d assigned", self.part_model.rowCount(), assigned)
+        log.info("%d parts, %d assigned", total, assigned)
+        self._update_identity_context(total, assigned)
         self.parts_reloaded.emit()
 
     def _on_hide_bom_toggled(self, checked: bool) -> None:
@@ -782,9 +916,30 @@ class MainWindow(QMainWindow):
         self.reload_parts()
 
     def _on_board_count_changed(self, value: int) -> None:
-        """Persist and republish the board count."""
+        """Persist and republish the board count.
+
+        The two spin boxes are **linked until the user separates them**. While
+        they agree, changing one changes the other, so raising an order from
+        five boards to fifty prices fifty assembled — which is what somebody
+        who has never touched the second box means, and leaving it at five
+        would understate the parts bill tenfold without saying anything. Once
+        the user has set them apart on purpose, only the ceiling moves.
+
+        Ordering fewer boards lowers that ceiling. ``setMaximum`` clamps the
+        value itself, which emits ``valueChanged`` and re-enters the assembly
+        handler, so persistence and the recompute both happen there.
+        """
+        previous, self._board_count = self._board_count, value
         self._store_setting("general", "bom_estimator_boards", value)
+        self.assembly_input.setMaximum(value)
+        if self.assembly_input.value() == previous:
+            self.assembly_input.setValue(value)
         self.board_count_changed.emit(value)
+
+    def _on_assembly_count_changed(self, value: int) -> None:
+        """Persist and republish how many boards get populated."""
+        self._store_setting("general", "bom_estimator_assembled", value)
+        self.assembly_count_changed.emit(value)
 
     def _on_force_standard_toggled(self, checked: bool) -> None:
         """Persist the Force Standard toggle."""

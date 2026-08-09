@@ -15,7 +15,8 @@ from typing import Optional
 
 from PySide6.QtWidgets import QApplication
 
-from .ui import theme
+from . import config
+from .ui import brand, theme
 
 LOG_FORMAT = "%(asctime)s %(levelname)-7s %(funcName)s %(message)s"
 LOG_DATE_FORMAT = "%H:%M:%S"
@@ -91,8 +92,18 @@ def build_application(
     # Both names feed QStandardPaths, which qualifies the config directory by
     # organisation *and* application. Keeping them distinct avoids the
     # ".../LCSC Suite/LCSC Suite/" a matching pair produces.
+    #
+    # **These two are storage keys and the rebrand deliberately did not touch
+    # them.** They are half the path under which every existing user's settings
+    # and their optional 750MB parts database already sit. Renaming them here
+    # does not move that data, it strands it — silently, because a fresh config
+    # directory looks exactly like a first run. Only the *display* name below
+    # became EasyAssembly; see ``config.adopt_data_directory`` for the cost of
+    # getting this wrong, which this project has already paid twice.
     app.setOrganizationName("kicad-lcsc-suite")
-    app.setApplicationName("LCSC Suite")
-    app.setApplicationDisplayName("LCSC Suite")
+    app.setApplicationName(config.APPLICATION_NAME)
+    # What the user sees: window titles that do not state their own, the macOS
+    # menu bar, the task switcher.
+    app.setApplicationDisplayName(brand.APP_NAME)
     theme.apply(app, theme_mode)
     return app
