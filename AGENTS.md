@@ -5,16 +5,26 @@ jump to [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the code fits
 together and [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for how to build,
 test and verify changes.
 
+[docs/BUGS.md](docs/BUGS.md) is the register of what is currently **known to be
+wrong**, with the file and line for each. Read it before reporting a bug as new,
+and add to it rather than to a commit message when you find one you are not
+fixing. It supersedes [docs/CODE-REVIEW.md](docs/CODE-REVIEW.md), which reviewed
+the pre-migration tree and whose findings mostly lived in files Phase 8 deleted.
+
 `CLAUDE.md` holds the rules that ship a broken plugin if you break them.
 
 ---
 
 ## What this repo is
 
-A **KiCad 10 plugin**, not a library or a service. It is a fork of
-`Bouni/kicad-jlcpcb-tools` with `uPesy/easyeda2kicad.py` vendored in
-(`lcsc_suite/lib/easyeda2kicad/`) and an LCSC Explorer added on top. Upstream
-commits are pinned in `UPSTREAM.txt`.
+A **KiCad 10 plugin**, not a library or a service. It began as a fork of
+`Bouni/kicad-jlcpcb-tools` and still carries that project's logic layer —
+`store.py`, `library.py`, `bom_estimation/`, `db_build/`, roughly a fifth of the
+Python here. Everything above that line (the UI, the IPC bridge, the controller,
+the LCSC Explorer, the API client) is this project's own. Upstream commits are
+pinned in `UPSTREAM.txt`. `uPesy/easyeda2kicad.py` is an **installed
+dependency**, pinned by the installers; it used to be vendored under
+`lcsc_suite/lib/` and deliberately is not any more.
 
 The UI runs **out of process**: a PySide6 application in its own virtualenv,
 talking to KiCad over the IPC API. KiCad launches it from a manifest whose
@@ -39,14 +49,19 @@ Entry points:
 1. **ruff-clean commits.** `ruff check --extend-exclude=lib` and
    `ruff format --check --exclude lib` must both pass. Both are clean at HEAD.
    When editing a file, reformat only the lines you intend to change.
-2. **Never edit `lcsc_suite/lib/`.** Vendored upstream code, excluded from ruff
-   and pre-commit. Changes belong upstream or in a wrapper.
-3. **AGPL boundary.** `lcsc_suite/lib/easyeda2kicad/` is AGPL-3.0; the rest is
-   MIT. See the licensing section of [README.md](README.md) before making the
-   repo public or cutting a release.
+2. **Never edit `lcsc_suite/lib/`.** Vendored third-party code (now only
+   `packaging`), excluded from ruff and pre-commit. Changes belong upstream or
+   in a wrapper.
+3. **Never re-vendor easyeda2kicad.** It is AGPL-3.0 and this repository ships
+   no AGPL code; that is what keeps it MIT. It is pinned in `APP_REQUIREMENTS`
+   (`install.sh`) and `$AppRequirements` (`install.ps1`), which must stay in
+   step, and every import of it is lazy and guarded so a venv without it
+   degrades instead of failing to start. See the licensing section of
+   [README.md](README.md) before cutting a release.
 4. **Dependencies are declared and they ship.** The app requires a one-time
-   setup step — `install.sh` builds a `.venv` and pip-installs `PySide6` and
-   `kicad-python`, pinned in `APP_REQUIREMENTS`. That is a deliberate product
+   setup step — `install.sh` builds a `.venv` and pip-installs `PySide6`,
+   `kicad-python` and `easyeda2kicad`, pinned in `APP_REQUIREMENTS`. That is a
+   deliberate product
    decision: users get a UI that behaves the same on macOS and Windows in
    exchange for running the installer once. Add further dependencies
    deliberately. `pyproject.toml`'s `dependencies` list belongs to the
@@ -63,6 +78,7 @@ runtime dependencies — must run on a bare KiCad install".
 ```text
 lcsc_suite/            THE APPLICATION — out-of-process PySide6, own venv (3.12+)
   kicad_bridge.py      the only module that touches KiCad; closes all four IPC traps
+  kicad_locks.py       whether KiCad holds a document or only left a ~*.lck behind
   controller.py        SuiteController — the window reports, this decides and writes
   parts.py             board <-> project database <-> displayed rows, reconciled
   search_source.py     where the Explorer's data comes from: live, or the fixture
@@ -71,6 +87,9 @@ lcsc_suite/            THE APPLICATION — out-of-process PySide6, own venv (3.1
   app.py               QApplication bootstrap (Fusion + palette + font)
   shared.py            names the toolkit-free logic layer; import through it
   ui/                  the widgets; ui/theme.py owns every colour
+    brand.py           the product name and the mark. APP_NAME is the only place
+                       "EasyAssembly" is spelled in Python; config.APPLICATION_NAME
+                       is a *storage key* and deliberately still says "LCSC Suite"
     explorer/          the LCSC Explorer — window, results, facets, detail, preview, tasks
     photo_viewer.py    full-size product photos, retargetable while open
   fixtures/board.json  a 110-footprint board for the probe, CI and the bridge tests
@@ -91,7 +110,8 @@ lcsc_suite/            THE APPLICATION — out-of-process PySide6, own venv (3.1
   bom_estimation/      pricing and estimation logic + view formatting
   dblib/               the bulk parts-DB format definitions, shared with db_build/
   icons/               55 PNGs, recoloured for dark mode by ui/icons.py
-  lib/                 VENDORED — easyeda2kicad (AGPL) and packaging. Do not edit.
+  lib/                 VENDORED — `packaging` only, a fallback for core/version.
+                       easyeda2kicad is a pip dependency now, not code we ship.
 
 kicad_plugin/          what gets symlinked into KiCad's plugins/ dir
 db_build/              GitHub Action DB conversion (not plugin code)
@@ -99,6 +119,7 @@ scripts/qt_probe.py    renders any screen offscreen to docs/screens/*.png
 scripts/compare_geometry.py  the cross-platform layout gate; CI runs it on Windows
 scripts/live_ipc_check.py    proves the bridge's writes against a running KiCad
 scripts/capture_explorer_fixture.py  ONE SHOT, run by hand. Spends live requests
+scripts/make_brand_icons.py  redraws the committed toolbar/PCM PNGs from ui/brand.py
 tests/                 every test — the only pytest testpath
 docs/screens/          committed PNGs, plus geometry.txt and wx/ (see below)
 ```
@@ -145,6 +166,11 @@ search and installs a host breaker that refuses everything else. Same shape as
   [`schematicexport.py`](lcsc_suite/schematicexport.py). Assignment writes the
   *footprint*; the export writes the *symbol*. It refuses to touch a schematic
   eeschema has open and never clears a number it was not told to.
+- **"The schematic is open in the KiCad Schematic Editor" and it is not** →
+  [`kicad_locks.py`](lcsc_suite/kicad_locks.py). KiCad leaves `~<name>.lck`
+  behind when it is force-quit, and the lock carries no process id, so the lock
+  is dated against the running KiCad's IPC socket instead. Do not try to ask
+  KiCad: `GetOpenDocuments(DOCTYPE_SCHEMATIC)` has no handler in 10.0.3.
 - **A board that looks unassigned while the schematic has every number** →
   [`schematicimport.py`](lcsc_suite/schematicimport.py). Neither direction is
   automatic; both are toolbar buttons that show a per-reference diff and
@@ -220,8 +246,8 @@ Phase 3 found trap 4 this way, after two phases of green fixture tests.
 - `pyproject.toml` still pins `UP006/UP007/UP035/UP045` off. They were off for
   KiCad's Python 3.9, which nothing here runs in any more; turning them back on
   is a deliberate, separate change, not a drive-by.
-- `.gitignore` does not ignore `lib/`, contradicting upstream. Deliberate: this
-  fork vendors code in `lcsc_suite/lib/`.
+- `.gitignore` does not ignore `lib/`, contradicting upstream. Deliberate:
+  `lcsc_suite/lib/packaging/` is vendored and tracked.
 - `jlcpcb/` in the working tree holds a downloaded parts database (~750 MB) and
   is gitignored. It is optional — the Download toolbar button is the only thing
   that fetches it.

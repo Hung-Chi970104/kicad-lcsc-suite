@@ -355,7 +355,10 @@ class ExplorerWindow(QDialog):
         )
         self.results.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.results.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.results.setShowGrid(True)
+        # No grid, matching the main window's part table. These rows are
+        # catalogue cards — a photo, two lines of description, a price block —
+        # and ruling them into five boxes fights the layout inside each cell.
+        self.results.setShowGrid(False)
         self.results.setWordWrap(False)
         self.results.setAlternatingRowColors(True)
         self.results.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
@@ -597,15 +600,24 @@ class ExplorerWindow(QDialog):
             self._start_retail_fill()
 
     def _has_stock(self, hit) -> bool:
-        """Report whether ``hit`` has stock in the inventory now on show."""
+        """Report whether ``hit`` has stock in the inventory now on show.
+
+        A retail figure we do not have counts as "keep it", and **a recorded
+        ``None`` is not a figure** — it is "asked, nobody answered", which is the
+        one thing `api.py` insists must never be rendered as a zero. Reading the
+        presence of the entry rather than its value hid every row LCSC had
+        refused to answer about, so switching this filter on while the retail
+        hosts were rate-limiting deleted the row the user had just clicked. The
+        two states are deliberately one case here: absent and unanswered are both
+        "we do not know", and a filter must not pretend to know.
+
+        `asked_retail` keeps the other job — stopping `_start_retail_fill` from
+        putting the same refused question twice.
+        """
         if self._shows("jlc"):
             return (hit.stock or 0) > 0
-        # A retail figure not yet fetched counts as "keep it": hiding rows we
-        # have not looked at would silently shrink the result set as the
-        # background fill progressed.
-        if not self.model.asked_retail(hit.lcsc):
-            return True
-        return (self.model.known_retail(hit.lcsc) or 0) > 0
+        stock = self.model.known_retail(hit.lcsc)
+        return stock is None or stock > 0
 
     def _sorted(self, hits: list) -> list:
         """Order ``hits`` by the active sort mode.
