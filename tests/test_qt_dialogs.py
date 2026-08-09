@@ -890,3 +890,16 @@ def test_the_pacing_is_dropped_for_a_fixture_but_kept_for_a_live_source(
     assert BomEstimator(controller.window, parts, source=_Live()).interval == (
         ENRICH_INTERVAL
     )
+
+
+def test_the_assembly_count_drives_the_estimate(controller):
+    """Populating fewer boards than were ordered reprices the whole estimate."""
+    controller.window.boards_input.setValue(50)
+    before = controller.window.summary_label.text()
+    controller.window.assembly_input.setValue(5)
+    after = controller.window.summary_label.text()
+
+    assert "BOM Estimate (50 boards)" in before
+    assert "BOM Estimate (50 boards, 5 assembled)" in after
+    assert "Per assembled board" in after
+    assert before != after

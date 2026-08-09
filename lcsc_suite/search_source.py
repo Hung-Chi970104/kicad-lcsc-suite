@@ -155,7 +155,7 @@ class LiveSource:
 
         The same payload ``EasyedaApi.get_cad_data_of_component`` returns: that
         method is ``easyeda_product``'s ``result`` under a different URL
-        spelling. Going through ``api.py`` instead of the vendored client means
+        spelling. Going through ``api.py`` instead of that client means
         one transport, one cache and one host breaker for the whole window.
         """
         return api.easyeda_product(lcsc)
@@ -220,11 +220,11 @@ class FixtureSource(LiveSource):
         return images
 
     def search(self, keyword: str, page_size: int = 100, part_type=None):
-        """Answer from the capture only, never through the vendored client.
+        """Answer from the capture only, never through the fallback client.
 
         The one place the offline guarantee had a hole, and a test found it.
         ``api.jlc_search`` posts to JLC directly and, **if that yields nothing**,
-        falls back to the vendored ``easyeda2kicad`` client — which carries its
+        falls back to the ``easyeda2kicad`` client — which carries its
         own transport and so never passes the host breaker at all. A keyword the
         capture does not hold therefore went straight out to the network, from a
         source whose whole contract is that it cannot.
