@@ -2,6 +2,21 @@
 
 This module is intentionally pure and UI-agnostic so pricing behavior can be
 reviewed and tested independently from enrichment transport and presentation.
+
+**Two quantities, not one.** JLC will not fabricate fewer than five boards but
+will assemble as few as the user asks for, so ``board_count`` (how many bare
+PCBs are ordered) and ``assembly_count`` (how many of them get populated) are
+separate inputs and drive different costs:
+
+===========================  ===============================================
+Scales with ``assembly_count``  components, SMT joints, THT joints
+Charged once per order          setup, stencil, THT setup, extended-part fee
+Neither                         PCB fabrication — **not priced here at all**
+===========================  ===============================================
+
+Getting that wrong is not a rounding error. Five boards' worth of parts for a
+run that populates two is more than twice the component cost of the real order,
+and components are the largest line in almost every estimate this produces.
 """
 
 from __future__ import annotations
@@ -79,6 +94,11 @@ class BomEstimateSummary:
     bom_part_count: int = 0
     smt_joint_count: int = 0
     tht_joint_count: int = 0
+    #: Bare PCBs ordered. Fabrication is not priced here; this is carried so the
+    #: summary can say what the estimate was asked for.
+    board_count: int = 0
+    #: How many of those boards JLC populates. Every per-unit cost uses this.
+    assembly_count: int = 0
 
 
 DEFAULT_PRICING = AssemblyPricing()
@@ -128,7 +148,15 @@ def get_unit_price(quantity: int, prices: str) -> float:
     ``qFrom``/``qTo`` bracket convention (see ``common/translate.py``)
     where the next bracket starts at ``qTo + 1``.
 
-    Returns ``-1.0`` when no valid tier can be resolved.
+    A quantity that falls in a **gap** between two bands takes the band below
+    it. Ladders arrive from two sources — ``details.encode_price_bands``, which
+    cannot leave a gap, and the bulk parts database, which can — and a gap used
+    to return ``-1.0``: the part was counted as having no price at all, dropped
+    out of the component total and reported under "Missing prices", for a part
+    whose price is right there in the ladder. Reading the band below is what
+    the ladder means anyway; a break point is where the price *changes*.
+
+    Returns ``-1.0`` only when there is no usable band at all.
     """
     if not prices:
         return -1.0
@@ -154,13 +182,16 @@ def get_unit_price(quantity: int, prices: str) -> float:
     if quantity <= bands[0][0]:
         return bands[0][2]
 
+    fallback = bands[0][2]
     for lower, upper, unit_price in bands:
         if upper is None and quantity >= lower:
             return unit_price
         if upper is not None and lower <= quantity <= upper:
             return unit_price
+        if lower <= quantity:
+            fallback = unit_price
 
-    return -1.0
+    return fallback
 
 
 def is_tht_part(part: Mapping[str, object]) -> bool:
@@ -217,12 +248,31 @@ def _collect_billable_bom_parts(
 def _build_lcsc_quantities(
     bom_parts: Iterable[Mapping[str, object]], board_count: int
 ) -> dict[str, int]:
-    """Aggregate quantity per LCSC code for component pricing lookup."""
+    """Aggregate quantity per LCSC code for component pricing lookup.
+
+    ``board_count`` here is how many boards are *assembled*: JLC buys parts for
+    the boards it populates, not for the bare ones. Callers that hold both
+    numbers pass the assembly count.
+    """
     lcsc_quantities: dict[str, int] = {}
     for part in bom_parts:
         lcsc = str(part.get("lcsc") or "")
         lcsc_quantities[lcsc] = lcsc_quantities.get(lcsc, 0) + board_count
     return lcsc_quantities
+
+
+def resolve_assembly_count(board_count: int, assembly_count=None) -> int:
+    """How many boards get populated, given what the caller asked for.
+
+    ``None`` means "all of them", which is what every caller predating the
+    split means and what the estimate did before there was a second number.
+    More than were ordered cannot be assembled, so that clamps rather than
+    raising: the spin box already bounds it and an estimate is not the place to
+    refuse to draw a number.
+    """
+    if assembly_count is None:
+        return max(0, int(board_count))
+    return max(0, min(int(assembly_count), int(board_count)))
 
 
 def _calculate_component_costs(
@@ -287,15 +337,22 @@ def calculate_bom_estimate(
     pricing: AssemblyPricing | None = None,
     board_standard: bool | None = None,
     smt_populated_sides: int = 0,
+    assembly_count: int | None = None,
 ) -> BomEstimateSummary:
     """Calculate BOM and assembly estimate totals.
+
+    ``board_count`` is how many bare PCBs are ordered — JLC's minimum is five —
+    and ``assembly_count`` how many of them are populated, which may be fewer
+    and defaults to all of them. Components and joints follow the assembly
+    count; setup, stencil and the extended-part fee are charged once per order
+    whichever it is.
 
     The calculation proceeds in phases:
     1) collect billable BOM rows,
     2) compute direct component costs,
     3) scan assembly metadata/joint counts,
     4) apply mode-specific setup/surcharge rules,
-    5) roll up totals and per-board value.
+    5) roll up totals and per-assembled-board value.
     """
     p = pricing if pricing is not None else DEFAULT_PRICING
     _tht_setup_fee = p.tht_setup_fee
@@ -308,14 +365,20 @@ def calculate_bom_estimate(
     _economic_stencil_fee = p.economic_stencil_fee
     _standard_stencil_fee = p.standard_stencil_fee
     summary = _create_empty_summary()
+    assembled = resolve_assembly_count(board_count, assembly_count)
+    summary.board_count = max(0, int(board_count))
+    summary.assembly_count = assembled
 
     # Phase 1: keep only BOM-eligible rows with assigned LCSC code.
     bom_parts = _collect_billable_bom_parts(parts)
     summary.bom_part_count = len(bom_parts)
-    if not bom_parts:
+    if not bom_parts or assembled <= 0:
+        # Nothing populated is a real order — bare boards — and it costs nothing
+        # in parts or assembly. Falling through would still charge setup and
+        # stencil for a line that never runs.
         return summary
 
-    lcsc_quantities = _build_lcsc_quantities(bom_parts, board_count)
+    lcsc_quantities = _build_lcsc_quantities(bom_parts, assembled)
 
     run_context = _PricingRunContext(get_part_details=get_part_details)
 
@@ -330,7 +393,7 @@ def calculate_bom_estimate(
     # Phase 3: assembly mode signals, joints, and surcharge sets.
     scan = _scan_assembly_state(
         bom_parts,
-        board_count,
+        assembled,
         run_context=run_context,
     )
     # Phase 4: fixed fees and stencil/setup rules by mode.
@@ -376,15 +439,30 @@ def calculate_bom_estimate(
         summary.fixed_cost + summary.extended_cost + summary.variable_assembly_cost
     )
     summary.total_cost = summary.component_cost + summary.assembly_cost
-    if board_count > 0:
-        summary.cost_per_board = summary.total_cost / board_count
+    # Per *assembled* board. Dividing by the boards ordered would quote a
+    # cheaper unit than any board in the order actually costs, because the bare
+    # ones carry none of this.
+    if assembled > 0:
+        summary.cost_per_board = summary.total_cost / assembled
     return summary
 
 
 def calculate_part_bom_cost(
-    part: Mapping[str, object], details: Mapping[str, object], board_count: int
+    part: Mapping[str, object],
+    details: Mapping[str, object],
+    board_count: int,
+    tier_quantity: int | None = None,
 ) -> float | None:
-    """Return the raw BOM contribution for a part, excluding fixed fees."""
+    """Return the raw BOM contribution for a part, excluding fixed fees.
+
+    ``board_count`` is how many of this part the order needs for this one
+    reference; ``tier_quantity`` is how many the *whole order* buys, which is
+    what picks the price band. They differ whenever a number is assigned to
+    more than one reference — forty-two 100nF capacitors on five boards buy 210
+    pieces, and pricing that reference's contribution at the five-piece band
+    overstates it by whatever the ladder discounts. Defaults to ``board_count``
+    so a caller that has only one number gets the old answer.
+    """
     if part.get("exclude_from_bom"):
         return None
 
@@ -392,7 +470,9 @@ def calculate_part_bom_cost(
     if not lcsc:
         return None
 
-    unit_price = get_unit_price(board_count, str(details.get("price") or ""))
+    if tier_quantity is None:
+        tier_quantity = board_count
+    unit_price = get_unit_price(tier_quantity, str(details.get("price") or ""))
     if unit_price < 0:
         return None
 

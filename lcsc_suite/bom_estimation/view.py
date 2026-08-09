@@ -16,19 +16,49 @@ from .pricing import (
     calculate_bom_estimate,
     calculate_part_bom_cost,
     get_unit_price,
+    resolve_assembly_count,
 )
 
 
+def format_quantity(board_count: int, assembly_count=None) -> str:
+    """Say what the estimate is for, in as few words as it takes.
+
+    ``5 boards`` while everything ordered is also populated, and only then
+    ``5 boards, 2 assembled`` — a second number that always says the same as
+    the first is noise, and this line is already the widest thing in the window.
+    """
+    assembled = resolve_assembly_count(board_count, assembly_count)
+    if assembled == board_count:
+        return f"{board_count} boards"
+    return f"{board_count} boards, {assembled} assembled"
+
+
 def format_bom_estimate_summary(
-    summary: BomEstimateSummary, board_count: int, mode: str, reason_text: str
+    summary: BomEstimateSummary,
+    board_count: int,
+    mode: str,
+    reason_text: str,
+    assembly_count=None,
 ) -> tuple[str, str]:
     """Format BOM estimate summary into two compact UI lines."""
-    overview_line = (
-        f"BOM Estimate ({board_count} boards): Mode {mode} | "
-        f"Total ${summary.total_cost:.2f} | "
-        f"Per board ${summary.cost_per_board:.2f} | "
-        f"Triggers {reason_text} | "
+    assembled = resolve_assembly_count(board_count, assembly_count)
+    per_board = "Per board" if assembled == board_count else "Per assembled board"
+    # A part nobody could price contributes nothing, so the total is a floor
+    # rather than an estimate. Saying "Missing prices 3" beside a figure
+    # presented as the answer has read as a diagnostic to ignore; it is the
+    # reason the figure is too low.
+    missing = (
         f"Missing prices {summary.missing_prices}"
+        if not summary.missing_prices
+        else f"Missing prices {summary.missing_prices} — total is a floor"
+    )
+    overview_line = (
+        f"BOM Estimate ({format_quantity(board_count, assembly_count)}): "
+        f"Mode {mode} | "
+        f"Total ${summary.total_cost:.2f} | "
+        f"{per_board} ${summary.cost_per_board:.2f} | "
+        f"Triggers {reason_text} | "
+        f"{missing}"
     )
 
     mode_is_standard = str(mode).strip().lower() == "standard"
@@ -103,6 +133,7 @@ def build_bom_estimate_view_model(
     board_count: int,
     get_part_details: Callable[[str], dict],
     standard_context: Mapping[str, object],
+    assembly_count=None,
 ) -> dict:
     """Build a pure BOM estimate view model for UI consumption.
 
@@ -114,13 +145,14 @@ def build_bom_estimate_view_model(
     - ``summary_label``: two-line user-facing summary text
     """
     parts = list(parts)
+    quantity = format_quantity(board_count, assembly_count)
     if not parts:
         return {
             "summary": None,
             "mode": None,
             "reason_text": "none",
             "highlight_refs": set(),
-            "summary_label": f"BOM Estimate ({board_count} boards): no parts",
+            "summary_label": f"BOM Estimate ({quantity}): no parts",
         }
 
     bom_parts = [
@@ -134,7 +166,7 @@ def build_bom_estimate_view_model(
             "mode": None,
             "reason_text": "none",
             "highlight_refs": set(),
-            "summary_label": f"BOM Estimate ({board_count} boards): no assigned BOM parts",
+            "summary_label": f"BOM Estimate ({quantity}): no assigned BOM parts",
         }
 
     board_standard = bool(standard_context.get("board_standard"))
@@ -149,6 +181,7 @@ def build_bom_estimate_view_model(
         get_part_details=get_part_details,
         board_standard=board_standard,
         smt_populated_sides=smt_side_count,
+        assembly_count=assembly_count,
     )
 
     mode = "Standard" if board_standard else "Economic"
@@ -159,6 +192,7 @@ def build_bom_estimate_view_model(
         board_count,
         mode,
         reason_text,
+        assembly_count,
     )
     return {
         "summary": summary,
@@ -176,6 +210,7 @@ def build_standard_mode_context(
     populated_sides: Iterable[str],
     smt_populated_sides: Iterable[str],
     standard_part_refs: Iterable[str],
+    assembly_count=None,
 ) -> dict:
     """Build Standard/Economic policy context from normalized board facts.
 
@@ -190,14 +225,19 @@ def build_standard_mode_context(
     to marking every part on a two-sided board: that painted the entire list
     and told the user nothing. Board-level reasons are reported in the summary
     line instead, via :func:`standard_signal_reasons`.
+
+    The quantity trigger counts **assembled** boards. It is a fact about the
+    assembly line JLC runs the job on, and fifty bare PCBs of which two are
+    populated is a two-piece assembly job.
     """
     populated_sides = set(populated_sides)
     smt_populated_sides = set(smt_populated_sides)
     standard_part_refs = set(standard_part_refs)
+    assembled = resolve_assembly_count(board_count, assembly_count)
 
     signals = {
         "manual_enabled": bool(manual_enabled),
-        "qty_50_plus": board_count >= 50,
+        "qty_50_plus": assembled >= 50,
         "standard_part_present": bool(standard_part_refs),
         "multi_side_populated": len(populated_sides) > 1,
     }
@@ -215,19 +255,23 @@ def prepare_bom_price_labels(
     parts: Iterable[Mapping[str, object]],
     board_count: int,
     get_part_details: Callable[[str], dict],
+    assembly_count=None,
 ) -> dict:
     """Return ``{reference: label}`` mapping for BOM price column population.
 
     Labels are per-reference display values, while quantity-tier pricing is
-    resolved per unique LCSC code using aggregated board quantity.
+    resolved per unique LCSC code using the aggregated order quantity. Both the
+    tier and the row's own quantity count **assembled** boards: a part on a
+    board that is never populated is never bought.
     """
+    assembled = resolve_assembly_count(board_count, assembly_count)
     part_rows = [part for part in parts if part.get("reference")]
     billable_rows = [
         part
         for part in part_rows
         if not part.get("exclude_from_bom") and str(part.get("lcsc") or "")
     ]
-    lcsc_quantities = _build_lcsc_quantities(billable_rows, board_count)
+    lcsc_quantities = _build_lcsc_quantities(billable_rows, assembled)
 
     details_cache: dict = {}
     result: dict = {}
@@ -241,14 +285,14 @@ def prepare_bom_price_labels(
             details = details_cache[lcsc]
 
         if not part.get("exclude_from_bom") and lcsc:
-            quantity = lcsc_quantities.get(lcsc, board_count)
+            quantity = lcsc_quantities.get(lcsc, assembled)
             unit_price = get_unit_price(quantity, str(details.get("price") or ""))
             if unit_price < 0:
                 result[reference] = "N/A"
             else:
-                result[reference] = f"${unit_price * board_count:.4f}"
+                result[reference] = f"${unit_price * assembled:.4f}"
             continue
 
-        result[reference] = format_part_bom_price_label(part, details, board_count)
+        result[reference] = format_part_bom_price_label(part, details, assembled)
 
     return result

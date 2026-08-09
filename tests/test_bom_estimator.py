@@ -528,3 +528,159 @@ def test_prepare_bom_price_labels_skips_parts_without_reference():
     )
 
     assert labels == {}
+
+
+# ---------------------------------------------------------------------------
+# Boards ordered vs boards assembled
+#
+# JLC will not fabricate fewer than five PCBs but will populate as few of them
+# as asked. Before these, one number drove both, so a five-board order that
+# assembled two was priced for five boards' worth of parts — the largest line
+# in the estimate, more than doubled.
+# ---------------------------------------------------------------------------
+
+
+def _one_part_board():
+    """One SMT part, two pads, priced flat so the arithmetic stays legible."""
+    return [
+        {
+            "reference": "R1",
+            "lcsc": "C1",
+            "exclude_from_bom": 0,
+            "pad_count": 2,
+            "has_tht": 0,
+            "assembly_flags": '{"exclude_from_pos": false, "is_dnp": false}',
+        }
+    ]
+
+
+def _flat_price(_lcsc):
+    """Return a one-band ladder, so quantity cannot change the unit price."""
+    return {"price": "1-:1.00", "type": "Basic"}
+
+
+def test_components_are_bought_for_the_boards_that_are_assembled():
+    """Five ordered, two populated: two parts, not five."""
+    summary = calculate_bom_estimate(
+        _one_part_board(),
+        board_count=5,
+        get_part_details=_flat_price,
+        assembly_count=2,
+    )
+
+    assert summary.component_cost == pytest.approx(2.00)
+    assert summary.assembly_count == 2
+    assert summary.board_count == 5
+
+
+def test_joints_are_placed_only_on_the_boards_that_are_assembled():
+    """Per-joint fees follow the assembly line, not the fabrication order."""
+    summary = calculate_bom_estimate(
+        _one_part_board(),
+        board_count=5,
+        get_part_details=_flat_price,
+        assembly_count=2,
+    )
+
+    assert summary.smt_joint_count == 4  # two pads on each of two boards
+
+
+def test_one_time_fees_are_charged_once_however_many_are_assembled():
+    """Setup, stencil and the extended-part fee are per order, not per board."""
+    two = calculate_bom_estimate(
+        _one_part_board(),
+        board_count=5,
+        get_part_details=_flat_price,
+        assembly_count=2,
+    )
+    five = calculate_bom_estimate(
+        _one_part_board(),
+        board_count=5,
+        get_part_details=_flat_price,
+        assembly_count=5,
+    )
+
+    assert two.fixed_cost == five.fixed_cost
+
+
+def test_the_per_board_figure_is_per_assembled_board():
+    """Dividing by the boards ordered quotes a unit no board in the order costs."""
+    summary = calculate_bom_estimate(
+        _one_part_board(),
+        board_count=5,
+        get_part_details=_flat_price,
+        assembly_count=2,
+    )
+
+    assert summary.cost_per_board == pytest.approx(summary.total_cost / 2)
+
+
+def test_assembling_nothing_costs_nothing():
+    """Bare boards are a real order, and no assembly line runs for them."""
+    summary = calculate_bom_estimate(
+        _one_part_board(),
+        board_count=5,
+        get_part_details=_flat_price,
+        assembly_count=0,
+    )
+
+    assert summary.total_cost == 0.0
+    assert summary.fixed_cost == 0.0
+    assert summary.smt_joint_count == 0
+
+
+def test_more_assembled_than_ordered_is_clamped_not_refused():
+    """The spin box bounds this; an estimate is no place to refuse to draw one."""
+    summary = calculate_bom_estimate(
+        _one_part_board(),
+        board_count=5,
+        get_part_details=_flat_price,
+        assembly_count=99,
+    )
+
+    assert summary.assembly_count == 5
+
+
+def test_omitting_the_assembly_count_populates_every_board_ordered():
+    """The behaviour every caller predating the split relies on."""
+    both = calculate_bom_estimate(
+        _one_part_board(), board_count=5, get_part_details=_flat_price
+    )
+    explicit = calculate_bom_estimate(
+        _one_part_board(),
+        board_count=5,
+        get_part_details=_flat_price,
+        assembly_count=5,
+    )
+
+    assert both.total_cost == explicit.total_cost
+    assert both.assembly_count == 5
+
+
+def test_the_quantity_trigger_counts_assembled_boards():
+    """Fifty bare PCBs of which two are populated is a two-piece assembly job."""
+    context = build_standard_mode_context(
+        manual_enabled=False,
+        board_count=50,
+        populated_sides={"top"},
+        smt_populated_sides={"top"},
+        standard_part_refs=set(),
+        assembly_count=2,
+    )
+
+    assert context["signals"]["qty_50_plus"] is False
+    assert context["board_standard"] is False
+
+
+def test_price_labels_follow_the_assembled_quantity():
+    """The BOM column is what the order buys, so it counts assembled boards."""
+    parts = [{"reference": "R1", "lcsc": "C1", "exclude_from_bom": 0}]
+
+    labels = prepare_bom_price_labels(
+        parts,
+        board_count=5,
+        get_part_details=lambda _lcsc: {"price": "1-:0.10"},
+        assembly_count=2,
+    )
+
+    assert labels == {"R1": "$0.2000"}

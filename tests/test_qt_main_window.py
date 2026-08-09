@@ -37,7 +37,7 @@ from lcsc_suite import (
 )
 from lcsc_suite.config import Settings  # noqa: E402
 from lcsc_suite.single_instance import SingleInstance, _socket_name  # noqa: E402
-from lcsc_suite.ui import icons  # noqa: E402
+from lcsc_suite.ui import brand, icons  # noqa: E402
 from lcsc_suite.ui.main_window import COLUMNS, DEFAULT_SIZE, MainWindow  # noqa: E402
 
 FIXTURE = (
@@ -90,8 +90,8 @@ def _labels(toolbar) -> list[str]:
 
 def test_window_identity(window):
     """Titled for the app and the board, at the reference size."""
-    assert window.windowTitle() == "LCSC Suite — tempctrl.kicad_pcb"
-    assert (window.width(), window.height()) == (1300, 772)
+    assert window.windowTitle() == f"{brand.APP_NAME} — tempctrl.kicad_pcb"
+    assert (window.width(), window.height()) == DEFAULT_SIZE
 
 
 def test_top_toolbar_has_the_buttons_in_order(window):
@@ -165,7 +165,7 @@ def test_every_part_button_fits_without_an_extension_arrow(window):
     original. Losing ``Save mappings`` that way is a regression, not a detail.
     """
     window.show()
-    window.resize(1300, 772)
+    window.resize(*DEFAULT_SIZE)
     assert _hidden_part_buttons(window) == []
 
 
@@ -179,7 +179,7 @@ def test_the_buttons_still_fit_once_the_estimate_has_two_lines(window):
     estimate to show. Setting the text is what closes that gap.
     """
     window.show()
-    window.resize(1300, 772)
+    window.resize(*DEFAULT_SIZE)
     window.summary_label.setText(
         "BOM Estimate (5 boards): Mode Economic | Total $263.57 | Per board "
         "$52.71 | Triggers none | Missing prices 7\nDirect BOM Cost: $218.09 | "
@@ -232,6 +232,47 @@ def test_estimator_row(window):
     assert window.boards_input.singleStep() == 5
     assert window.force_standard.text() == "Force Standard"
     assert window.estimator_help.text() == "Help"
+
+
+def test_assembly_count_starts_at_the_board_count(window):
+    """Two numbers, and nothing changes until the user separates them."""
+    assert window.assembly_input.value() == 5
+    assert window.assembly_input.maximum() == 5
+
+
+def test_raising_the_order_raises_the_assembly_while_they_agree(window):
+    """Somebody who has never touched the second box means "all of them"."""
+    window.boards_input.setValue(50)
+
+    assert window.assembly_input.value() == 50
+
+
+def test_a_separated_assembly_count_stays_where_it_was_put(window):
+    """Once they differ on purpose, only the ceiling moves."""
+    window.assembly_input.setValue(2)
+    window.boards_input.setValue(50)
+
+    assert window.assembly_input.value() == 2
+    assert window.assembly_input.maximum() == 50
+
+
+def test_ordering_fewer_boards_clamps_the_assembly_count(window):
+    """More cannot be assembled than were made."""
+    window.boards_input.setValue(50)
+    window.assembly_input.setValue(30)
+    window.boards_input.setValue(10)
+
+    assert window.assembly_input.value() == 10
+
+
+def test_assembly_count_is_persisted_and_republished(window):
+    """A new assembly count reaches both the settings file and any listener."""
+    seen = []
+    window.assembly_count_changed.connect(seen.append)
+    window.assembly_input.setValue(2)
+
+    assert seen == [2]
+    assert window.settings.get("general", "bom_estimator_assembled") == 2
 
 
 def test_status_line_names_the_board_count(window):
@@ -356,7 +397,7 @@ def test_unreadable_geometry_falls_back_to_the_default(application, board, tmp_p
     settings.set("window", "main_geometry", "not base64 at all !!")
 
     result = MainWindow(board, settings=settings)
-    assert (result.width(), result.height()) == (1300, 772)
+    assert (result.width(), result.height()) == DEFAULT_SIZE
     result.log_pane.uninstall()
     result.close()
 

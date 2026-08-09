@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render any LCSC Suite screen offscreen, screenshot it, dump its geometry.
+"""Render any EasyAssembly screen offscreen, screenshot it, dump its geometry.
 
 **This is the acceptance tool for every phase of the Qt migration.** A UI change
 is not done until the screen it touched has been rendered here and the PNG has
@@ -674,6 +674,26 @@ def screen_mainwindow_estimate(context) -> QWidget:
     return window
 
 
+def screen_mainwindow_partial_assembly(context) -> QWidget:
+    """Build the main window pricing a run that populates some of the order.
+
+    JLC's two minimums are different — five bare PCBs, but as few of them
+    assembled as the user likes — and the estimate used to have one number for
+    both, so a five-board order that populated two was priced for five boards'
+    worth of parts. Its own screen because the difference is entirely in the
+    text: ``Assemble:`` set below ``Boards:``, the summary naming both, and
+    ``Per assembled board`` in place of ``Per board``. A geometry dump would
+    show two identical spin boxes and prove none of it.
+    """
+    controller = _controller(context)
+    window = controller.window
+    settle(400)
+    window.boards_input.setValue(25)
+    window.assembly_input.setValue(5)
+    controller.estimator.recompute()
+    return window
+
+
 def screen_export_summary(context) -> QWidget:
     """Build the report shown after a real BOM/CPL export (Phase 6).
 
@@ -849,6 +869,7 @@ SCREENS = {
     "mainwindow": screen_mainwindow,
     "mainwindow-assigned": screen_mainwindow_assigned,
     "mainwindow-estimate": screen_mainwindow_estimate,
+    "mainwindow-partial-assembly": screen_mainwindow_partial_assembly,
     "mainwindow-unassigned": screen_mainwindow_unassigned,
     "mappings": screen_mappings,
     "part-details": screen_part_details,
