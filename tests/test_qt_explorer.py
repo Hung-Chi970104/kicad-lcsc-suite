@@ -215,7 +215,7 @@ def test_an_uncaptured_keyword_degrades_to_an_empty_grid(tmp_path, source):
 def test_the_search_never_falls_back_to_the_vendored_client(source, monkeypatch):
     """The one hole the offline guarantee had, pinned shut.
 
-    ``api.jlc_search`` falls back to the vendored ``easyeda2kicad`` client when
+    ``api.jlc_search`` falls back to the ``easyeda2kicad`` client when
     the direct POST yields nothing, and that client has its own transport — it
     never passes the host breaker. So an uncaptured keyword used to leave the
     machine from a source whose whole contract is that it cannot.
@@ -521,6 +521,35 @@ def test_in_stock_only_keeps_unfetched_retail_rows(tmp_path, source):
     window.in_stock_only.setChecked(True)
     window.apply_filters()
     assert window.model.rowCount() == 100
+    window.close()
+
+
+def test_in_stock_only_keeps_the_rows_lcsc_refused_to_answer_about(tmp_path, source):
+    """A refusal is not an empty warehouse, and this filter used to say it was.
+
+    ``None`` is what a rate-limited retail host records, and reading the presence
+    of the entry rather than its value turned every refused row into a zero — so
+    switching this filter on while LCSC was refusing deleted the row the user had
+    just clicked, and it did it worst exactly when the filter could mean least.
+    The doctrine is `api.py`'s own: ``None`` "is *not* the same as zero, and
+    callers must not render it as such".
+    """
+    window = make_window(tmp_path, source)
+    window.inventory.setCurrentIndex(1)
+    window.model.forget_fetched()
+    refused = [hit.lcsc for hit in window.model.hits()[:10]]
+    for lcsc in refused:
+        window.model.set_retail(lcsc, None)
+    # One confirmed zero alongside them, which *is* evidence and must still go.
+    zeroed = window.model.hits()[10].lcsc
+    window.model.set_retail(zeroed, 0)
+
+    window.in_stock_only.setChecked(True)
+    window.apply_filters()
+
+    shown = {hit.lcsc for hit in window.model.hits()}
+    assert set(refused) <= shown, "a refusal was rendered as an empty warehouse"
+    assert zeroed not in shown
     window.close()
 
 
