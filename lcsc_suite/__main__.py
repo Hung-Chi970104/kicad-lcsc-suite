@@ -13,7 +13,7 @@ import os
 import sys
 import tempfile
 
-from . import app as app_module, kicad_bridge
+from . import APP_NAME, app as app_module, board_watch, kicad_bridge
 from .config import Settings, adopt_data_directory, legacy_settings_path
 from .single_instance import SingleInstance
 
@@ -75,7 +75,7 @@ def main(argv=None) -> int:
         log.error("Environment: %s", kicad_bridge.environment_report())
         from PySide6.QtWidgets import QMessageBox
 
-        QMessageBox.critical(None, "LCSC Suite", str(exc))
+        QMessageBox.critical(None, APP_NAME, str(exc))
         return 1
 
     info = board.info()
@@ -85,7 +85,7 @@ def main(argv=None) -> int:
     # project database and would quietly overwrite each other.
     guard = SingleInstance(info.path)
     if not args.allow_multiple and not guard.acquire():
-        log.info("An LCSC Suite window is already open for %s; raised it.", info.name)
+        log.info("An %s window is already open for %s; raised it.", APP_NAME, info.name)
         return 0
 
     from .controller import build as build_controller
@@ -111,6 +111,10 @@ def main(argv=None) -> int:
     window = controller.window
     guard.raise_requested.connect(window.raise_to_front)
     application.aboutToQuit.connect(guard.release)
+    # Follow the board out. Scoped to *this* board in *this* KiCad, so a second
+    # project closing leaves its window alone; see board_watch's docstring. A
+    # fixture board never closes, so this costs the probe and CI nothing.
+    board_watch.close_window_with_board(board, window, application)
     window.show()
     return application.exec()
 

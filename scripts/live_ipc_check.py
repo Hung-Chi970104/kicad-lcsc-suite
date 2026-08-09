@@ -248,6 +248,25 @@ def check_validation(board, report: Report, footprints) -> None:
         report.check("raised ValueError", False, "it did not raise")
 
 
+def check_liveness(board, report: Report) -> None:
+    """Check that the open board reports itself open, and show what else is.
+
+    Read-only, so it runs before anything writes. It can only prove the "yes"
+    half — proving the "no" needs a window closed under it, which no script can
+    arrange. Do that by hand: leave the app open, close **only** this PCB
+    window, and watch the app go with it within a few seconds.
+
+    The other boards are listed rather than merely counted because that is where
+    the two-projects case is visible. Open a second project alongside this one
+    and a second entry should appear under a different directory; the app
+    matches on that path, so each window follows its own board out.
+    """
+    report.section("0. the board reports itself open")
+    report.check("still_open()", board.still_open() is True)
+    for path in kicad_bridge.open_board_paths(board):
+        print(f"  open PCB: {path}")
+
+
 def main(argv=None) -> int:
     """Connect to a running KiCad and exercise every write helper."""
     parser = argparse.ArgumentParser(
@@ -295,6 +314,7 @@ def main(argv=None) -> int:
         return 2
 
     report = Report()
+    check_liveness(board, report)
     check_existing_field(board, report, footprints)
     check_field_creation(board, report, footprints)
     check_batch(board, report, footprints)

@@ -58,6 +58,7 @@ Two backends implement the same :class:`Board` protocol:
 
 from __future__ import annotations
 
+import contextlib
 import copy
 from dataclasses import dataclass, field, replace
 import json
@@ -66,6 +67,7 @@ import os
 import re
 from typing import Callable, Iterable, Optional, Protocol, Sequence
 
+from . import APP_NAME
 from .shared import fab_rules
 
 log = logging.getLogger(__name__)
@@ -209,6 +211,12 @@ class Board(Protocol):
 
     def set_exclude_from_pos(self, states: dict) -> Sequence[FootprintView]: ...
 
+    #: Whether the editor still has this board open. Polled, not pushed: the
+    #: IPC API has no "document closed" event to subscribe to. ``timeout_ms``
+    #: overrides the connection's deadline for this one question, because the
+    #: caller polling on the GUI thread cannot afford the one writes use.
+    def still_open(self, timeout_ms: Optional[int] = None) -> bool: ...
+
     # Placement geometry, read only when a CPL is written. Deliberately not on
     # :class:`FootprintView`: both cost a round trip apiece and the part list
     # refreshes on every assignment, so putting them in the snapshot would make
@@ -249,6 +257,18 @@ class _Board:
 
     def _read_footprints(self) -> Iterable[FootprintView]:  # pragma: no cover
         raise NotImplementedError
+
+    def still_open(self, timeout_ms: Optional[int] = None) -> bool:
+        """Report whether *this* board is still open in the editor we attached to.
+
+        A board that has no editor behind it — the fixture — is always open;
+        only :class:`_Ipc` can answer this for real. See
+        :mod:`lcsc_suite.board_watch` for what asks, and why the answer is about
+        one board rather than about KiCad as a whole. ``timeout_ms`` is accepted
+        and ignored: there is no round trip here to put a deadline on.
+        """
+        del timeout_ms
+        return True
 
     # -- placement geometry, for the CPL ------------------------------------
 
@@ -367,7 +387,7 @@ class _Board:
             log.exception("Could not put the previous values back")
             return False
 
-        self._push(commit, "Undo the LCSC Suite write KiCad did not accept")
+        self._push(commit, f"Undo the {APP_NAME} write KiCad did not accept")
         self._cache = None
         after = {view.reference: view for view in self._read_footprints()}
         return all(
@@ -520,6 +540,77 @@ _B_CU = 34
 # ---------------------------------------------------------------------------
 
 
+def _document_key(document) -> tuple:
+    """Identify one PCB document, comparably.
+
+    ``(project path, board filename)`` rather than the ``DocumentSpecifier``
+    itself, because the specifier KiCad hands back on a later call is a fresh
+    protobuf and need not compare equal field-for-field. Normalised the way
+    every other path in this app is, so that a Windows drive letter in a
+    different case does not read as a different board.
+    """
+    project = getattr(document, "project", None)
+    path = getattr(project, "path", "") or ""
+    return (
+        os.path.normcase(os.path.normpath(path)) if path else "",
+        os.path.normcase(getattr(document, "board_filename", "") or ""),
+    )
+
+
+def _same_document(left, right) -> bool:
+    """Whether two PCB document specifiers name the same board."""
+    return _document_key(left) == _document_key(right)
+
+
+@contextlib.contextmanager
+def _shorter_deadline(kicad, timeout_ms: Optional[int]):
+    """Put one request on a shorter deadline, then restore the connection's own.
+
+    **Why one request wants its own deadline.** The app connects with a timeout
+    sized for a write: the user asked for that, and waiting beats a false
+    failure. :mod:`lcsc_suite.board_watch` polls *unprompted*, on the GUI
+    thread, where the same wait is a window that does not paint — and it already
+    treats a late answer as survivable, which is what its miss tolerance is for.
+    Inheriting the write deadline made a stalled KiCad freeze the app for five
+    seconds a tick.
+
+    **Why it reaches into kipy.** There is no public setter. The deadline is a
+    ``KiCad(timeout_ms=...)`` constructor argument that becomes the send and
+    receive timeouts of one long-lived ``pynng.Req0`` socket, so the only way to
+    change it for a single call is to change it on the client and on the socket
+    and put both back. Both, because they are different things: the client's copy
+    is what a reconnect *inside* this block would dial with, and the socket's
+    pair is what a request already in flight obeys.
+
+    Every step is optional and every failure degrades to "use the connection's
+    own deadline". A liveness poll must not be the thing that raises.
+    """
+    client = getattr(kicad, "_client", None)
+    if timeout_ms is None or client is None:
+        yield
+        return
+    conn = getattr(client, "_conn", None)
+    inherited = getattr(client, "_timeout_ms", None)
+    previous = {
+        option: getattr(conn, option)
+        for option in ("recv_timeout", "send_timeout")
+        if conn is not None and hasattr(conn, option)
+    }
+    try:
+        if inherited is not None:
+            client._timeout_ms = timeout_ms
+        with contextlib.suppress(Exception):
+            for option in previous:
+                setattr(conn, option, timeout_ms)
+        yield
+    finally:
+        if inherited is not None:
+            client._timeout_ms = inherited
+        for option, was in previous.items():
+            with contextlib.suppress(Exception):
+                setattr(conn, option, was)
+
+
 class _Ipc(_Board):
     """Board access over KiCad 10's IPC API."""
 
@@ -544,6 +635,37 @@ class _Ipc(_Board):
             # shape pcbnew.GetBuildVersion() returns in the wx plugin.
             kicad_version=getattr(version, "full_version", str(version)),
         )
+
+    def still_open(self, timeout_ms: Optional[int] = None) -> bool:
+        """Report whether the board we attached to is still open in this KiCad.
+
+        Matched on ``(project path, board filename)`` against the PCB documents
+        the connection reports, and **not** on "is any board open" — that is the
+        whole difficulty. Two projects open at once are two boards this call has
+        to tell apart, so that closing one does not take the other's window with
+        it. The connection itself pins the KiCad instance: ``connect()`` dials
+        the socket ``KICAD_API_SOCKET`` named at launch, so we are only ever
+        asking the editor that started us.
+
+        Raises :class:`NotConnected` when the question cannot be put at all —
+        KiCad gone, socket dead, request timed out. That is deliberately a
+        different outcome from ``False``: one means "your board was closed", the
+        other means "no answer", and only the caller knows how many unanswered
+        polls in a row are worth acting on. See
+        :class:`lcsc_suite.board_watch.BoardWatcher`.
+
+        ``timeout_ms`` shortens the deadline for this one request; see
+        :func:`_shorter_deadline` for what that costs and why it is worth it.
+        """
+        from kipy.proto.common.types import DocumentType
+
+        document = self._board.document
+        try:
+            with _shorter_deadline(self._kicad, timeout_ms):
+                documents = self._kicad.get_open_documents(DocumentType.DOCTYPE_PCB)
+        except Exception as exc:  # noqa: BLE001 - kipy raises several unrelated types
+            raise NotConnected(f"KiCad did not answer ({exc}).") from exc
+        return any(_same_document(other, document) for other in documents)
 
     def run_kicad_action(self, action: str):
         """Run a KiCad tool action by name. Diagnostics only — see the base."""
@@ -1128,6 +1250,34 @@ def connect(timeout_ms: int = 5000) -> Board:
     return _Ipc(kicad, board)
 
 
+def open_board_paths(board) -> list:
+    """List every PCB open in the editor behind ``board``. Diagnostics only.
+
+    Nothing in the app calls this — :meth:`Board.still_open` asks the same
+    question and answers it about one board. It exists so that
+    ``scripts/live_ipc_check.py`` can *show* the list, which is the only way to
+    see the two-projects case with your own eyes: a second project open
+    alongside should appear here as a second entry with a different directory.
+
+    Empty for a board with no editor behind it, and for any error — this is a
+    diagnostic and must never be the thing that fails a run.
+    """
+    kicad = getattr(board, "_kicad", None)
+    document = getattr(board, "_board", None)
+    if kicad is None or document is None:
+        return []
+    try:
+        from kipy.proto.common.types import DocumentType
+
+        documents = kicad.get_open_documents(DocumentType.DOCTYPE_PCB)
+    except Exception as exc:  # noqa: BLE001 - diagnostics never fail a run
+        log.debug("Could not list the open documents: %s", exc)
+        return []
+    return [
+        os.path.join(other.project.path, other.board_filename) for other in documents
+    ]
+
+
 def open_fixture(path: str, **kwargs) -> FixtureBoard:
     """Open a fixture board — the offline path used by the probe and CI."""
     return FixtureBoard.from_json(path, **kwargs)
@@ -1144,6 +1294,7 @@ __all__ = [
     "WriteVerificationError",
     "connect",
     "environment_report",
+    "open_board_paths",
     "open_fixture",
     "replace",
     "sanitize_lcsc",

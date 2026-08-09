@@ -36,7 +36,7 @@ os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.fonts=false")
 
 from PySide6.QtWidgets import QMessageBox, QTableWidget  # noqa: E402
 
-from lcsc_suite import app as app_module, kicad_bridge  # noqa: E402
+from lcsc_suite import app as app_module, kicad_bridge, kicad_locks  # noqa: E402
 from lcsc_suite.config import Settings  # noqa: E402
 from lcsc_suite.controller import SuiteController  # noqa: E402
 from lcsc_suite.parts import PartList, open_fixture_library  # noqa: E402
@@ -177,10 +177,33 @@ def test_a_project_with_no_schematic_offers_no_path(sync):
 
 
 def test_a_sheet_open_in_the_editor_is_reported(sync, tmp_path):
-    """KiCad's ``~<name>.lck`` is the whole of the detection, as in wx."""
+    """KiCad's ``~<name>.lck``, written by the KiCad that is running."""
     path = write_sheet(tmp_path, [symbol(ASSIGNED, "C111")])
     (tmp_path / f"~{ROOT_SHEET}.lck").write_text("locked", encoding="utf-8")
     assert sync.locked([str(path)]) == [str(path)]
+
+
+def test_a_lock_left_by_a_dead_kicad_is_not_a_sheet_in_the_editor(
+    sync, tmp_path, monkeypatch
+):
+    """The reported bug: a leftover lock refused every write, forever.
+
+    The socket dates the running session; a lock older than it belongs to a
+    KiCad that is gone, so there is no editor to close and nothing to warn
+    about. ``stale_locks`` still names it, because a lock being disregarded is
+    not something to do silently.
+    """
+    path = write_sheet(tmp_path, [symbol(ASSIGNED, "C111")])
+    lock = tmp_path / f"~{ROOT_SHEET}.lck"
+    lock.write_text('{"hostname":"Mac","username":"nobody"}', encoding="utf-8")
+    os.utime(lock, (50.0, 50.0))
+    monkeypatch.setattr(kicad_locks, "kicad_session_start", lambda: 100.0)
+    # Same user, or it reads as somebody else's lock rather than a leftover.
+    monkeypatch.setattr(kicad_locks.getpass, "getuser", lambda: "nobody")
+
+    assert sync.locked([str(path)]) == []
+    assert sync.plan_export([str(path)]).locked == []
+    assert sync.plan_export([str(path)]).stale_locks == [str(path)]
 
 
 # ---------------------------------------------------------------------------

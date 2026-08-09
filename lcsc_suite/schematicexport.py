@@ -11,10 +11,12 @@ on its own. Two rules keep an explicit write from doing damage:
 
 * A sheet is only rewritten when a value actually changed, so a sync that has
   nothing to do leaves every file untouched.
-* A schematic that the Schematic Editor has open is skipped. KiCad drops a
-  ``~<name>.kicad_sch.lck`` file next to a schematic it is editing, and the
-  editor holds the whole document in memory — writing underneath it means our
-  fields are lost the moment the user saves.
+* A schematic that the Schematic Editor has open is skipped. The editor holds
+  the whole document in memory, so writing underneath it means our fields are
+  lost the moment the user saves. Telling "has it open" from "left a lock file
+  behind after crashing" is :mod:`lcsc_suite.kicad_locks`'s job, not this
+  module's — a leftover lock used to block the write with advice nobody could
+  act on.
 
 The opposite direction lives in :mod:`schematicimport`.
 """
@@ -32,10 +34,15 @@ except ImportError:  # pragma: no cover - the out-of-process Qt app has no pcbne
 
 from .core.version import is_version6, is_version7
 
-#: KiCad locks an open document with a sibling file named ``~<name>.<ext>.lck``
-#: (see ``lockfile.cpp``); eeschema does this for the root sheet of a project.
-LOCK_PREFIX = "~"
-LOCK_SUFFIX = ".lck"
+# Re-exported: the lock rules moved to their own module when they stopped being
+# "does the file exist", but they are still spelled `schematicexport.…` by the
+# importer, the sync planner and their tests.
+from .kicad_locks import (  # noqa: F401 - re-export, see above
+    LOCK_PREFIX,
+    LOCK_SUFFIX,
+    is_open_in_editor,
+    lock_file_for,
+)
 
 #: Field names that have been used to carry an LCSC number over the years. A
 #: schematic that already uses one of these keeps it; new fields are "LCSC".
@@ -54,17 +61,6 @@ def is_lcsc_field(name: str) -> bool:
     matches on the same rule so the two directions agree on what they see.
     """
     return name.upper() in LCSC_FIELD_NAMES
-
-
-def lock_file_for(path: str) -> str:
-    """Return the path of the lock file KiCad uses for a document."""
-    directory, name = os.path.split(path)
-    return os.path.join(directory, f"{LOCK_PREFIX}{name}{LOCK_SUFFIX}")
-
-
-def is_open_in_editor(path: str) -> bool:
-    """Whether the Schematic Editor currently has this schematic open."""
-    return os.path.isfile(lock_file_for(path))
 
 
 def find_root_schematic(project_path: str, board_name: str) -> Optional[str]:
