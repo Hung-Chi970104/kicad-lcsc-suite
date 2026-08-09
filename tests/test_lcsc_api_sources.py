@@ -218,7 +218,7 @@ def test_assembly_photo_urls_falls_back_to_the_top_level_id(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Search parsing — the fields the vendored client drops
+# Search parsing — the fields the easyeda2kicad client drops
 # ---------------------------------------------------------------------------
 
 

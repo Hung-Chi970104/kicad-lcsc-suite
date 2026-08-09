@@ -1,6 +1,6 @@
 """Import LCSC parts into a KiCad library.
 
-Wraps the vendored easyeda2kicad converters and adds the piece it does not do:
+Wraps the ``easyeda2kicad`` converters and adds the piece they do not do:
 registering the resulting library in KiCad's ``sym-lib-table`` and
 ``fp-lib-table`` so the symbol and footprint are immediately usable without
 the user touching Preferences → Manage Libraries.
@@ -145,8 +145,8 @@ class LcscImporter:
         result = ImportResult(lcsc=lcsc)
         try:
             # Deferred because an import is the only thing that needs them, and
-            # they are not cheap. They live in the vendored lib/ directory, which
-            # ``lcsc/__init__.py`` puts on sys.path when this package loads.
+            # they are not cheap. ``easyeda2kicad`` is an installed dependency
+            # (install.sh pins it); a missing one is reported, not raised.
             from easyeda2kicad.easyeda.easyeda_api import EasyedaApi  # noqa: PLC0415
             from easyeda2kicad.easyeda.easyeda_importer import (  # noqa: PLC0415
                 Easyeda3dModelImporter,
@@ -163,7 +163,9 @@ class LcscImporter:
                 ExporterSymbolKicad,
             )
         except ImportError as exc:
-            result.errors.append(f"vendored easyeda2kicad not importable: {exc}")
+            result.errors.append(
+                f"easyeda2kicad not importable ({exc}); re-run install.sh"
+            )
             return result
 
         api = EasyedaApi()
@@ -381,8 +383,12 @@ def _ensure_lib_table_entry(
         actions.append(f"{table_path.name} looks malformed; left it alone.")
         return actions
 
-    # Back up before rewriting a file KiCad owns.
-    backup = table_path.with_suffix(table_path.suffix + ".lcsc-suite.bak")
+    # Back up before rewriting a file KiCad owns. Copies written before the
+    # rebrand are named `.lcsc-suite.bak` and are not renamed or cleaned up:
+    # this is somebody's only copy of a lib table, and the one thing worse than
+    # an inconsistent suffix is a restore path that goes looking for a file
+    # under a name it was never saved as.
+    backup = table_path.with_suffix(table_path.suffix + ".easyassembly.bak")
     try:
         shutil.copyfile(table_path, backup)
     except OSError:

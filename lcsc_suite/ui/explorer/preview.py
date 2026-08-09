@@ -5,8 +5,8 @@ The Qt port of ``lcsc/previewpanel.py`` (``SvgPreviewPanel`` and
 their content into it and drew placeholder text through a ``wx.PaintDC``;
 ``QLabel`` inside a framed ``QWidget`` does all of that declaratively.
 
-The SVG half needs no third-party renderer: ``QSvgRenderer`` is part of PySide6,
-and the markup comes from the vendored ``easyeda2kicad`` renderer, which is pure
+The SVG half needs no extra renderer: ``QSvgRenderer`` is part of PySide6, and
+the markup comes from the ``easyeda2kicad`` renderer, which is pure
 string-building over the EasyEDA CAD payload and touches no network of its own.
 """
 
@@ -137,9 +137,9 @@ def render_previews(cad: dict) -> tuple[Optional[str], Optional[str]]:
 
     Each renderer is tried separately: a part can have a symbol EasyEDA can draw
     and a footprint it cannot, and one failing must not cost the other. The
-    imports are deferred because nothing needs them until a row is selected —
-    ``lcsc/__init__.py`` has already put the vendored ``lib/`` on ``sys.path`` by
-    then, so this is about cost, not about reachability.
+    imports are deferred because nothing needs them until a row is selected, and
+    because ``easyeda2kicad`` is an optional installed dependency: a venv
+    without it loses previews and keeps everything else.
     """
     if not cad:
         return None, None
@@ -149,8 +149,8 @@ def render_previews(cad: dict) -> tuple[Optional[str], Optional[str]]:
             render_footprint_svg,
             render_symbol_svg,
         )
-    except ImportError:  # pragma: no cover - only when lib/ is missing
-        log.debug("vendored easyeda2kicad SVG renderer not importable")
+    except ImportError:  # pragma: no cover - only when the package is absent
+        log.debug("easyeda2kicad SVG renderer not importable")
         return None, None
 
     try:

@@ -43,8 +43,11 @@ $AppLinkName = 'lcsc_suite'
 $LegacyWxLinkName = 'kicad_lcsc_suite'
 $Venv = Join-Path $Src '.venv'
 # Pinned rather than floating: the IPC API is young and its wire format has
-# changed between KiCad 10.x point releases.
-$AppRequirements = @('PySide6>=6.7,<7', 'kicad-python>=0.4,<1')
+# changed between KiCad 10.x point releases. easyeda2kicad is pinned exactly —
+# its converters decide the on-disk shape of every symbol, footprint and 3D
+# model, and it is AGPL-3.0, so pip fetches it rather than this repo shipping
+# it. Keep in step with APP_REQUIREMENTS in install.sh.
+$AppRequirements = @('PySide6>=6.7,<7', 'kicad-python>=0.4,<1', 'easyeda2kicad==1.0.1')
 
 if ($Wx) {
     Write-Error 'The wx plugin was removed at the Phase 8 cutover. See docs/QT_MIGRATION_PLAN.md; this installs the Qt app.'
@@ -165,7 +168,7 @@ function Test-ApiServer {
         Write-Host 'KiCad API server : enabled'
     } else {
         Write-Host ''
-        Write-Host '!! KiCad''s API server is DISABLED. The LCSC Suite button will not'
+        Write-Host '!! KiCad''s API server is DISABLED. The EasyAssembly button will not'
         Write-Host '!! be able to reach your board until you enable it:'
         Write-Host '!!'
         Write-Host '!!     KiCad -> Preferences -> Plugins -> Enable KiCad API'
@@ -204,7 +207,7 @@ $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
 $manifest.actions[0].entrypoint = 'run.cmd'
 $manifest | ConvertTo-Json -Depth 10 | Set-Content -Path $manifestPath -Encoding UTF8
 
-Write-Host 'Installed the LCSC Suite app'
+Write-Host 'Installed the EasyAssembly app'
 Write-Host "  source : $(Join-Path $Src 'kicad_plugin')"
 Write-Host "  target : $AppTarget"
 Write-Host "  python : $(& $venvPython --version 2>&1)"
@@ -225,4 +228,4 @@ if (Test-Path $WxTarget) {
 
 Write-Host ''
 Write-Host 'Restart KiCad. In the PCB editor you will find:'
-Write-Host "  the 'LCSC Suite' toolbar button"
+Write-Host "  the 'EasyAssembly' toolbar button"

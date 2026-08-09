@@ -15,8 +15,8 @@ ruff check --extend-exclude=lib
 ruff format --check --exclude lib
 ```
 
-The exclusion is not optional — without it you get 3445 errors out of the
-vendored `lcsc_suite/lib/`. Use `ruff==0.14.14`, matching
+The exclusion is not optional — without it you get 3160 errors out of the
+vendored `lcsc_suite/lib/packaging/`. Use `ruff==0.14.14`, matching
 `.pre-commit-config.yaml`.
 
 Both commands pass clean at HEAD. They did not before Phase 8: four upstream
