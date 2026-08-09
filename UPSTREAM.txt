@@ -1,2 +1,8 @@
 bouni/kicad-jlcpcb-tools fa758809e0438ec316e474deb8506257a9fee310
-uPesy/easyeda2kicad.py fff10a38619963d7cb1c57d779655a9ea4572e95
+
+# easyeda2kicad is no longer vendored — it is AGPL-3.0 and this repo ships no
+# AGPL code. It is an installed dependency, pinned to the PyPI release that is
+# byte-identical to the commit it used to be vendored at:
+#   uPesy/easyeda2kicad.py fff10a38619963d7cb1c57d779655a9ea4572e95 == 1.0.1
+# The pin lives in APP_REQUIREMENTS (install.sh) and $AppRequirements
+# (install.ps1). Keep those two in step.

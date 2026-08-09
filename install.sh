@@ -34,7 +34,11 @@ VENV="$SRC/.venv"
 # Pinned rather than floating: the IPC API is young and its wire format has
 # changed between KiCad 10.x point releases. A smoke test that fails loudly on
 # drift is better than a UI that half works.
-APP_REQUIREMENTS=("PySide6>=6.7,<7" "kicad-python>=0.4,<1")
+# easyeda2kicad is pinned exactly, not floated: it used to be vendored at a
+# fixed commit, and its converters decide the on-disk shape of every symbol,
+# footprint and 3D model written into a user's library. It is AGPL-3.0 and is
+# deliberately NOT redistributed by this repository — pip fetches it here.
+APP_REQUIREMENTS=("PySide6>=6.7,<7" "kicad-python>=0.4,<1" "easyeda2kicad==1.0.1")
 MIN_PYTHON="3.12"
 
 UNINSTALL=0
@@ -210,7 +214,7 @@ check_api_server() {
         echo "KiCad API server : enabled"
     else
         echo
-        echo "!! KiCad's API server is DISABLED. The LCSC Suite button will not"
+        echo "!! KiCad's API server is DISABLED. The EasyAssembly button will not"
         echo "!! be able to reach your board until you enable it:"
         echo "!!"
         echo "!!     KiCad -> Preferences -> Plugins -> Enable KiCad API"
@@ -238,7 +242,7 @@ echo "Installing app dependencies"
 chmod +x "$SRC/kicad_plugin/run.sh"
 link_or_die "$APP_TARGET" "$SRC/kicad_plugin"
 
-echo "Installed the LCSC Suite app"
+echo "Installed the EasyAssembly app"
 echo "  source : $SRC/kicad_plugin"
 echo "  target : $APP_TARGET"
 echo "  python : $("$VENV/bin/python" --version 2>&1)"
@@ -259,4 +263,4 @@ fi
 
 echo
 echo "Restart KiCad. In the PCB editor you will find:"
-echo "  the 'LCSC Suite' toolbar button (the new Qt app)"
+echo "  the 'EasyAssembly' toolbar button (the new Qt app)"

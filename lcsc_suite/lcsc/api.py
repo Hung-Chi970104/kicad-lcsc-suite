@@ -8,8 +8,8 @@ Three distinct sources, deliberately kept separate because they do not agree:
 * **LCSC retail**   ``wmsc.lcsc.com`` — what you can buy loose as a component
   order, split into domestic/overseas warehouses, plus the real parametric
   attribute list that drives LCSC's filter sidebar.
-* **JLC search**    the parts-library keyword search (via the vendored
-  easyeda2kicad client). Returns parametric attributes in bulk, which the
+* **JLC search**    the parts-library keyword search (via the installed
+  ``easyeda2kicad`` client). Returns parametric attributes in bulk, which the
   per-part detail endpoints cannot do.
 
 A part can have huge assembly stock and zero retail stock, or the reverse.
@@ -49,8 +49,8 @@ EASYEDA_PRODUCT = "https://easyeda.com/api/products/{}/components?version=6.4.19
 #: :func:`jlc_image_url`.
 JLC_FILE_DOWNLOAD = "https://jlcpcb.com/api/file/downloadByFileSystemAccessId/{}"
 
-#: The parts-library keyword search. The vendored easyeda2kicad client calls
-#: the same endpoint but discards the image access ids on the way out, so this
+#: The parts-library keyword search. The ``easyeda2kicad`` client calls the
+#: same endpoint but discards the image access ids on the way out, so this
 #: module posts to it directly and keeps the client as a fallback.
 JLC_SEARCH_API = (
     "https://jlcpcb.com/api/overseas-pcb-order/v1/shoppingCart/smtGood/"
@@ -864,7 +864,7 @@ def jlc_search(
     bulk, which is what makes client-side facet filtering possible.
     ``part_type`` is ``"base"`` for Basic or ``"expand"`` for Extended.
 
-    Posts to the endpoint directly, falling back to the vendored easyeda2kicad
+    Posts to the endpoint directly, falling back to the ``easyeda2kicad``
     client. Both talk to the same URL; the direct call exists because the
     client's result mapper drops the product-photo access ids, and re-deriving
     those costs one extra request per row.
@@ -957,13 +957,19 @@ def _jlc_search_vendored(
     page_size: int,
     part_type: Optional[str],
 ) -> Tuple[int, List[SearchHit]]:
-    """Search via the vendored easyeda2kicad client — no photo ids."""
+    """Search via the ``easyeda2kicad`` client — no photo ids.
+
+    The function name keeps its historical ``_vendored`` suffix: tests pin it by
+    name, and ``api.py`` is copied rather than edited (AGENTS.md rule 5).
+    """
     try:
-        # Deferred: the vendored copy is only on sys.path once the plugin
-        # package has been imported.
+        # Deferred so that a missing optional dependency costs an error on this
+        # one path rather than an ImportError at module import.
         from easyeda2kicad.easyeda.easyeda_api import EasyedaApi  # noqa: PLC0415
-    except ImportError:  # pragma: no cover - only when lib/ is missing
-        logger.error("Vendored easyeda2kicad not importable; is lib/ on sys.path?")
+    except ImportError:  # pragma: no cover - only when the package is absent
+        logger.error(
+            "easyeda2kicad not importable; re-run install.sh to add it to the venv"
+        )
         return 0, []
 
     try:
