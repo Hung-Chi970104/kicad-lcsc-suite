@@ -1,11 +1,29 @@
-# kicad-lcsc-suite
+# EasyAssembly
 
 One KiCad plugin for everything LCSC: parametric search, honest dual stock,
 symbol/footprint/3D import, and JLCPCB fabrication output.
 
-This is a **fork** of [Bouni/kicad-jlcpcb-tools][bouni] with
-[uPesy/easyeda2kicad.py][e2k] vendored in and three capabilities added that
-neither tool had on its own. Upstream commits are pinned in `UPSTREAM.txt`.
+> The repository, the Python package and the settings directory are still
+> named `kicad-lcsc-suite` / `lcsc_suite` / `LCSC Suite`. That is deliberate,
+> not leftovers: those are storage keys and import paths, and renaming them
+> would strand the settings and the optional 750MB parts database that existing
+> installs already keep under them.
+
+A **PySide6 application** that runs out of process and drives KiCad 10 over its
+IPC API. The Explorer, the KiCad bridge, the controller, the assignment path and
+the whole UI are this project's own code.
+
+It **began** as a fork of [Bouni/kicad-jlcpcb-tools][bouni], and still carries
+that project's SQLite project store, parts-library layer, BOM pricing and
+parts-database build pipeline — about a fifth of the Python here, MIT-licensed
+and credited [below](#credits). What it no longer shares is the shape: upstream
+is an in-process wxPython plugin living in KiCad's bundled interpreter, and this
+is a separate application with its own venv, whose six largest modules have no
+line in common with it. Treat it as its own project that owes upstream a real
+debt, not as a patched copy. Upstream commits are pinned in `UPSTREAM.txt`.
+
+The EasyEDA→KiCad converter is [uPesy/easyeda2kicad.py][e2k], installed from
+PyPI by the installer. It is **not** redistributed in this repository.
 
 [bouni]: https://github.com/Bouni/kicad-jlcpcb-tools
 [e2k]: https://github.com/uPesy/easyeda2kicad.py
@@ -102,7 +120,7 @@ to all of LCSC. Narrow the keyword to pull a different slice.
 | **KiCad** | **10.0+** | the UI runs out of process over the IPC API, which does not exist before KiCad 10 |
 | **Python** | 3.12+ | its own virtualenv, not KiCad's bundled interpreter |
 | **Qt** | PySide6 6.7+ | Fusion style, forced, so both platforms render the same |
-| **Dependencies** | installed once, by `install.sh` | `PySide6` and `kicad-python`, plus the vendored zero-dependency easyeda2kicad |
+| **Dependencies** | installed once, by `install.sh` | `PySide6`, `kicad-python` and `easyeda2kicad`, all pip-installed into the app's venv |
 
 KiCad's **API server must be enabled**: Preferences → Plugins → Enable KiCad
 API. `install.sh` checks it and says so if it is off.
@@ -137,7 +155,7 @@ If the toolbar button does nothing, the launcher's log is the only place a
 start-up traceback appears — KiCad discards both streams:
 
 ```bash
-cat ~/.local/state/lcsc-suite/plugin.log
+cat ~/.local/state/easyassembly/plugin.log
 ```
 
 If stock columns read `?`, the cause is almost always TLS trust or a blocked
@@ -192,10 +210,10 @@ API server is enabled and tells you how to turn it on if not.
 
 ### 3. Restart KiCad
 
-Then: **PCB editor → the "LCSC Suite" toolbar button.**
+Then: **PCB editor → the "EasyAssembly" toolbar button.**
 
-Named "LCSC Suite" so it can sit alongside an upstream "JLCPCB Tools"
-install without producing two identical toolbar entries.
+The button carries its own name so it can sit alongside an upstream "JLCPCB
+Tools" install without producing two identical toolbar entries.
 
 ### 4. Confirm it works (optional)
 
@@ -215,7 +233,8 @@ carries its own frozen runtime is the plan — the metadata already declares
 | Symptom | Cause |
 |---|---|
 | Plugin missing from the menu | Directory name contains hyphens, or KiCad was not restarted |
-| Previews blank, rest works | EasyEDA has no drawable symbol/footprint for that part, or `lcsc_suite/lib/` is missing |
+| Previews blank, rest works | EasyEDA has no drawable symbol/footprint for that part, or `easyeda2kicad` is not in the venv — re-run `install.sh` |
+| Import fails with "easyeda2kicad not importable" | The venv predates the un-vendoring; re-run `install.sh` to add it |
 | Stock shows `?` | No CA trust store — set `LCSC_CA_BUNDLE` to a CA bundle |
 | Retail column stuck on `…` | LCSC detail endpoint unreachable or rate-limiting; **Refresh** to retry |
 | No product photo | Not every part has one; photos are best-effort and never block the rest |
@@ -295,7 +314,7 @@ A library triplet, project-local by default so the design stays portable:
 
 The plugin registers this in the project's `sym-lib-table` and `fp-lib-table`
 using `${KIPRJMOD}`, backing up any table it modifies to
-`*.lcsc-suite.bak`. Point **Import into:** outside the project directory and
+`*.easyassembly.bak`. Point **Import into:** outside the project directory and
 it registers globally with an absolute path instead.
 
 **KiCad caches library tables at startup** — restart KiCad if a freshly
@@ -332,7 +351,7 @@ lcsc_suite/            the PySide6 app, own venv, Python 3.12+
   store.py library.py    the SQLite layers
   fab_rules.py           the BOM/CPL rules: corrections, rotation, grouping
   icons/                 the icon set, recoloured for dark mode at runtime
-  lib/easyeda2kicad/     vendored, zero-dependency converter
+  lib/packaging/         vendored fallback for one import; no AGPL code here
   fixtures/              a 110-footprint board and one captured search
 
 kicad_plugin/          IPC manifest + launcher KiCad reads
@@ -350,42 +369,72 @@ There is one half now: the app brings its own interpreter (3.12+) and PySide6,
 so KiCad's bundled Python 3.9 constrains nothing here any more. `AGENTS.md` and
 `CLAUDE.md` carry the contributor rules.
 
-## Licensing — read before making this public
+## Licensing
 
-This repository combines two upstreams under **different** licenses:
+**This repository is MIT throughout.** Every file it ships is either its own
+work or MIT-licensed code from `Bouni/kicad-jlcpcb-tools`, and `LICENSE` covers
+both.
 
-| Component | Upstream | License |
+| Component | Origin | License |
 |---|---|---|
-| Plugin base (`lcsc_suite/store.py`, `library.py`, `fab_rules.py`, …) | [Bouni/kicad-jlcpcb-tools][bouni] | MIT (`LICENSE`) |
-| `lcsc_suite/lib/easyeda2kicad/` (vendored) | [uPesy/easyeda2kicad.py][e2k] | **AGPL-3.0** (its own `LICENSE`) |
-| `lcsc_suite/lcsc/`, `lcsc_suite/ui/`, installers | this repo | see below |
+| `lcsc_suite/lcsc/`, `lcsc_suite/ui/`, `kicad_bridge.py`, `controller.py`, installers, tests for them | this project | MIT (`LICENSE`) |
+| `store.py`, `library.py`, `bom_estimation/`, `derive_params.py`, `highlight_terms.py`, `db_build/` | [Bouni/kicad-jlcpcb-tools][bouni] | MIT (`LICENSE`) |
+| `lcsc_suite/lib/packaging/` | [PyPI `packaging`](https://pypi.org/project/packaging/) | Apache-2.0 / BSD-2-Clause |
+| `easyeda2kicad` | [uPesy/easyeda2kicad.py][e2k] | **AGPL-3.0 — a dependency, not shipped here** |
 
-The AGPL is the binding constraint. **While this repository stays private
-and you only run the plugin yourself, nothing is triggered** — the AGPL's
-obligations attach to *distribution* and to *network-service* use, neither
-of which applies to personal use of a private checkout.
+The AGPL used to be the binding constraint on this repository, because
+easyeda2kicad was vendored into `lcsc_suite/lib/`. **It is not vendored any
+more.** `install.sh` and `install.ps1` pip-install `easyeda2kicad==1.0.1` into
+the app's virtualenv, so the AGPL code arrives on a user's machine from PyPI,
+under its own license, and this repository redistributes none of it. That is why
+publishing this repo no longer forces the combined work to AGPL-3.0.
 
-If you ever make this repo public, publish a release, or let others use it
-over a network, the combined work must be offered under **AGPL-3.0**, with
-complete corresponding source. Two ways to stay clean:
+Two things that remain true and are worth knowing before a release:
 
-1. **Relicense the whole thing AGPL-3.0** — simplest, and compatible, since
-   MIT code can be included in an AGPL work.
-2. **Un-vendor easyeda2kicad** — drop `lcsc_suite/lib/easyeda2kicad/`,
-   make it a pip dependency the user installs, and keep this repo MIT. Removes
-   the "no dependencies to install" property.
+- The app **imports** easyeda2kicad at runtime, in [`lcsc/importer.py`](lcsc_suite/lcsc/importer.py),
+  [`lcsc/api.py`](lcsc_suite/lcsc/api.py) and [`ui/explorer/preview.py`](lcsc_suite/ui/explorer/preview.py).
+  The combination happens on the user's machine, from their own installer run,
+  which is the ordinary way projects depend on copyleft libraries — but "does
+  importing at runtime create a derivative work" is a genuinely contested
+  question, not a settled one. If a release matters commercially, get an actual
+  lawyer to look at it rather than trusting this paragraph.
+- Every import of it is **lazy and guarded**: a venv without easyeda2kicad
+  loses part import and SVG previews and reports why, rather than failing to
+  start. Keyword search falls back to the direct POST. Nothing else degrades.
 
-Upstream commit pins are in `UPSTREAM.txt`. Both upstream licenses are kept
-in the tree; do not delete them.
+Bouni's `LICENSE` stays in the tree permanently, and not as a courtesy — around
+10,000 lines of that project's code are still here, including `db_build/`
+almost verbatim. MIT asks for the notice to travel with the code; that is the
+whole price, and it is not negotiable while any of that code remains.
+
+Upstream commit pins are in `UPSTREAM.txt`.
 
 ## Credits
 
-The plugin this forks from is **[kicad-jlcpcb-tools][bouni] by Bouni**, which
-is where the BOM/CPL writers, the corrections subsystem, the project database
-and the parts-database build pipeline all came from. If this is useful to you,
-[the original author takes sponsorship](https://github.com/sponsors/Bouni).
+This project started from **[kicad-jlcpcb-tools][bouni] by Bouni** and would not
+exist without it. What is still that project's work, measured against the pin in
+`UPSTREAM.txt` rather than remembered:
 
-- The EasyEDA→KiCad converter is [uPesy/easyeda2kicad.py][e2k], vendored.
+| Still upstream's | Where |
+|---|---|
+| The parts-database build pipeline | [`db_build/`](db_build/) — essentially unmodified |
+| The per-project SQLite state | [`store.py`](lcsc_suite/store.py) |
+| The bulk parts DB and part cache | [`library.py`](lcsc_suite/library.py) |
+| BOM price estimation | [`bom_estimation/`](lcsc_suite/bom_estimation/) |
+| The LCSC Params column, and which spellings mean the same part | [`derive_params.py`](lcsc_suite/derive_params.py), [`highlight_terms.py`](lcsc_suite/highlight_terms.py) |
+
+Rewritten here rather than inherited: the entire UI, the KiCad IPC bridge, the
+LCSC API client, the Explorer, the assignment path, undo, board↔schematic sync,
+and the BOM/CPL rules — though those last were written to match upstream's
+output byte for byte, which is its own kind of debt. The capability differences
+are in [the table above](#why-this-exists); they are differences of scope, and
+upstream remains the right tool for the wx/KiCad-7-to-9 world this one left.
+
+If this is useful to you, [the original author takes
+sponsorship](https://github.com/sponsors/Bouni).
+
+- The EasyEDA→KiCad converter is [uPesy/easyeda2kicad.py][e2k], installed as a
+  dependency (AGPL-3.0) rather than redistributed here.
 - Footprint rotation corrections originate in
   [matthewlai/JLCKicadTools](https://github.com/matthewlai/JLCKicadTools).
 - The icon set is [Material Design Icons](https://materialdesignicons.com/).

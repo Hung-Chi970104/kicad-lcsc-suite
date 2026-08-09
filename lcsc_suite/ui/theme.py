@@ -19,6 +19,13 @@ were arrived at by looking at real screens:
     Those two shared a red once, which made a pricing note indistinguishable
     from a failure.
 
+``brand``
+    The EasyAssembly indigo, and the **only** hue that appears in the chrome.
+    Every other entry above is a claim about a part, so the accent had to come
+    from somewhere the data never goes — otherwise a branded toolbar teaches
+    users a colour that means nothing in the one place they need to read it.
+    Nothing in the part table is ever drawn in it.
+
 Two things differ from the wx original, both on purpose.
 
 **The style is forced to Fusion.** wxWidgets wraps native controls, so a layout
@@ -59,9 +66,15 @@ _PALETTE: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
     # a match tints runs inside one cell, so they co-occur, and one amber for
     # both would read as a single meaning. Teal is unused elsewhere in the table.
     "match": ((0, 112, 116), (110, 214, 214)),
+    # Brand. The one hue the *chrome* is allowed to be, and the reason it is
+    # indigo rather than anything nearer the data: every other entry above
+    # already means something in the part table, so a brand drawn in teal would
+    # read as "this came from JLC" and one in purple as "this is retail stock".
+    # Indigo is the widest gap left on the wheel, and it never appears in a cell.
+    "brand": ((59, 91, 219), (124, 143, 245)),
     # Chrome
-    "muted": ((110, 110, 116), (150, 150, 158)),
-    "rule": ((208, 208, 214), (72, 72, 80)),
+    "muted": ((108, 112, 124), (148, 152, 164)),
+    "rule": ((223, 225, 231), (62, 64, 72)),
 }
 
 #: Match-highlight colour when the row is selected. One value for both
@@ -71,28 +84,45 @@ _MATCH_ON_SELECTION = (255, 215, 64)
 
 #: Window/base/text colours for the two Fusion palettes. Stated rather than
 #: inherited so both platforms and both appearances land on the same pixels.
+#:
+#: The greys carry a slight blue cast (the channels rise B > G > R) rather than
+#: being neutral. That is deliberate and it is the whole trick behind the
+#: chrome: a dead-neutral grey next to a saturated indigo reads as *dirty*,
+#: because the eye takes the accent as the white point. Two or three points of
+#: blue is below the threshold of looking "blue" and above the threshold of
+#: looking wrong.
 _CHROME = {
     "light": {
-        "window": (240, 240, 240),
+        "window": (243, 244, 246),
         "base": (255, 255, 255),
-        "alternate": (247, 247, 249),
-        "text": (26, 26, 28),
-        "disabled": (150, 150, 152),
-        "highlight": (48, 116, 202),
+        "alternate": (248, 249, 251),
+        "text": (24, 26, 32),
+        "disabled": (156, 160, 170),
+        "highlight": (59, 91, 219),
         "highlight_text": (255, 255, 255),
-        "tooltip": (255, 255, 225),
-        "card": (232, 232, 234),
+        # Dark tooltips in both appearances. The pale yellow Fusion inherits
+        # from Windows 95 is the single most dated thing the old palette had,
+        # and it is the one surface that never sits next to the data.
+        "tooltip": (36, 38, 46),
+        "tooltip_text": (244, 245, 248),
+        "card": (236, 238, 242),
     },
     "dark": {
-        "window": (48, 49, 53),
-        "base": (36, 37, 40),
-        "alternate": (43, 44, 48),
-        "text": (228, 228, 232),
-        "disabled": (128, 128, 132),
-        "highlight": (74, 144, 226),
-        "highlight_text": (16, 16, 18),
-        "tooltip": (58, 59, 63),
-        "card": (58, 59, 64),
+        # Deeper than the old (48,49,53). The status hues above are all
+        # high-luminance in dark mode, so the further the chrome drops the more
+        # the data separates from it — the table is the point of this window.
+        "window": (32, 34, 40),
+        "base": (25, 27, 32),
+        "alternate": (30, 32, 38),
+        "text": (226, 228, 235),
+        "disabled": (118, 122, 132),
+        "highlight": (88, 110, 232),
+        # White, not the old near-black. The selection fill is a saturated
+        # indigo in both appearances now, and dark text on it was unreadable.
+        "highlight_text": (255, 255, 255),
+        "tooltip": (58, 61, 71),
+        "tooltip_text": (236, 237, 242),
+        "card": (42, 45, 53),
     },
 }
 
@@ -193,6 +223,27 @@ def card_background() -> QColor:
     return chrome("card")
 
 
+def brand() -> QColor:
+    """Return the accent — the only hue the chrome is allowed to use.
+
+    Kept behind a function rather than exported as a constant because it is
+    appearance-dependent like everything else here: the light indigo would
+    disappear into a dark window and the dark one glares on white.
+    """
+    return colour("brand")
+
+
+def brand_rgb() -> tuple[int, int, int]:
+    """Return the brand indigo as fixed RGB, ignoring the current appearance.
+
+    For artwork that leaves this process — KiCad's toolbar, the PCM listing, a
+    desktop icon — where there is no palette to follow and one file has to serve
+    every background. The light variant, because what supplies its contrast is
+    the tile it fills, not the window behind it.
+    """
+    return _PALETTE["brand"][0]
+
+
 def unassigned_colour() -> QColor:
     """Row colour for a BOM part with no LCSC number.
 
@@ -264,16 +315,18 @@ def build_palette(target: Mode) -> QPalette:
     put(QPalette.ColorRole.Base, "base")
     put(QPalette.ColorRole.AlternateBase, "alternate")
     put(QPalette.ColorRole.ToolTipBase, "tooltip")
-    put(QPalette.ColorRole.ToolTipText, "text")
+    put(QPalette.ColorRole.ToolTipText, "tooltip_text")
     put(QPalette.ColorRole.Text, "text")
     put(QPalette.ColorRole.Button, "window")
     put(QPalette.ColorRole.ButtonText, "text")
     put(QPalette.ColorRole.Highlight, "highlight")
     put(QPalette.ColorRole.HighlightedText, "highlight_text")
     palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 80, 80))
+    # Links are chrome, so they take the brand accent. They used to take the
+    # JLC teal, which made every hyperlink look like a claim about stock.
     palette.setColor(
         QPalette.ColorRole.Link,
-        QColor(*_PALETTE["jlc"][1 if target is Mode.DARK else 0]),
+        QColor(*_PALETTE["brand"][1 if target is Mode.DARK else 0]),
     )
 
     disabled = QColor(*values["disabled"])
@@ -288,30 +341,157 @@ def build_palette(target: Mode) -> QPalette:
 
 
 def stylesheet() -> str:
-    """App-wide stylesheet: the handful of things a palette cannot express."""
+    """App-wide stylesheet: the handful of things a palette cannot express.
+
+    Three rules govern everything below, and breaking one of them is how a
+    restyle turns into a regression:
+
+    **Nothing here states a font family or a text size in pixels.** The layout
+    gate (``scripts/compare_geometry.py``) only holds because the app pins a
+    point size and lets each platform pick the face. A ``font-size: 11px`` in a
+    stylesheet would silently opt that widget out of the arrangement.
+
+    **No sub-controls on spin boxes or combo boxes.** The moment a stylesheet
+    touches ``QSpinBox::up-button`` Qt stops drawing the Fusion arrow and
+    expects an image instead, so the control loses its arrows on every platform
+    at once. The two spin boxes get a border and nothing else.
+
+    **Padding is symmetric and stated in whole pixels.** Half-pixel padding
+    rounds differently at fractional device-pixel ratios, which is a
+    Windows-only wobble that no screenshot taken here would show.
+    """
     rule = colour("rule").name()
     muted = colour("muted").name()
     card = card_background().name()
+    accent = brand().name()
+    base = chrome("base").name()
+    window = chrome("window").name()
+    text = chrome("text").name()
+    # Hover and pressed are derived rather than stated so they track the two
+    # appearances automatically: a fixed grey that reads as "raised" on the
+    # light window reads as "sunken" on the dark one.
+    hover = blend(chrome("window"), chrome("text"), 0.08).name()
+    pressed = blend(chrome("window"), chrome("text"), 0.16).name()
+    scroll = blend(chrome("window"), chrome("text"), 0.22).name()
+    scroll_hover = blend(chrome("window"), chrome("text"), 0.38).name()
     return f"""
-    QToolBar {{ border: 0; padding: 2px; spacing: 2px; }}
+    QToolBar {{
+        border: 0;
+        border-bottom: 1px solid {rule};
+        padding: 3px 4px;
+        spacing: 2px;
+    }}
     QToolBar::separator {{
         background: {rule};
         width: 1px;
-        margin: 4px 6px;
+        margin: 6px 8px;
     }}
     QToolButton {{
-        padding: 3px 6px;
+        padding: 4px 7px;
         border: 1px solid transparent;
-        border-radius: 4px;
+        border-radius: 5px;
     }}
-    QToolButton:hover {{ border-color: {rule}; }}
+    QToolButton:hover {{ background: {hover}; }}
+    QToolButton:pressed {{ background: {pressed}; }}
     QToolButton:checked {{ background: {card}; border-color: {rule}; }}
-    QHeaderView::section {{
-        padding: 4px 6px;
+
+    /* The identity bar. A flat strip, separated by one hairline and nothing
+       else — a gradient or a drop shadow here would be the "overly fancy" this
+       design is trying not to be. */
+    QFrame#identity-bar {{
+        background: {base};
         border: 0;
-        border-right: 1px solid {rule};
         border-bottom: 1px solid {rule};
     }}
+    QLabel#identity-wordmark {{
+        color: {text};
+        font-weight: 600;
+    }}
+    QLabel#identity-context {{ color: {muted}; }}
+
+    QHeaderView::section {{
+        background: {window};
+        padding: 5px 6px;
+        border: 0;
+        border-bottom: 1px solid {rule};
+    }}
+    QHeaderView::section:hover {{ background: {hover}; }}
+    QTableView {{
+        border: 1px solid {rule};
+        border-radius: 5px;
+        gridline-color: transparent;
+    }}
+    QTableView::item:focus {{ outline: none; }}
+
+    QPlainTextEdit, QTextEdit, QListView, QTreeView {{
+        border: 1px solid {rule};
+        border-radius: 5px;
+    }}
+    QLineEdit {{
+        border: 1px solid {rule};
+        border-radius: 5px;
+        padding: 3px 6px;
+        background: {base};
+    }}
+    QLineEdit:focus {{ border-color: {accent}; }}
+    /* Border only. See the docstring: sub-control rules cost the arrows. */
+    QSpinBox, QDoubleSpinBox {{
+        border: 1px solid {rule};
+        border-radius: 5px;
+    }}
+
+    QPushButton {{
+        padding: 4px 12px;
+        /* 56 + the 12px padding either side = the 80px Fusion enforces on its
+           own. Styling a QPushButton at all discards that minimum, and what it
+           looks like when it goes is a 45px `OK` sitting next to a
+           `Show Details…` three times its width — which reads as a broken
+           dialog rather than as a restyled one. */
+        min-width: 56px;
+        border: 1px solid {rule};
+        border-radius: 5px;
+        background: {card};
+    }}
+    QPushButton:hover {{ background: {hover}; }}
+    QPushButton:pressed {{ background: {pressed}; }}
+    QPushButton:default {{ border-color: {accent}; }}
+    QPushButton:disabled {{ color: {muted}; background: transparent; }}
+
+    /* Thin, no arrows, handle only on the track it needs. Fusion's stepper
+       arrows are the other half of the dated look the tooltips had. */
+    QScrollBar:vertical {{
+        background: transparent;
+        width: 11px;
+        margin: 0;
+    }}
+    QScrollBar:horizontal {{
+        background: transparent;
+        height: 11px;
+        margin: 0;
+    }}
+    QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
+        background: {scroll};
+        border-radius: 4px;
+        margin: 2px;
+    }}
+    QScrollBar::handle:vertical {{ min-height: 28px; }}
+    QScrollBar::handle:horizontal {{ min-width: 28px; }}
+    QScrollBar::handle:hover {{ background: {scroll_hover}; }}
+    QScrollBar::add-line, QScrollBar::sub-line {{
+        height: 0; width: 0; border: 0; background: none;
+    }}
+    QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
+
+    QSplitter::handle {{ background: transparent; }}
+    QSplitter::handle:hover {{ background: {rule}; }}
+
+    QProgressBar {{
+        border: 0;
+        border-radius: 3px;
+        background: {card};
+    }}
+    QProgressBar::chunk {{ background: {accent}; border-radius: 3px; }}
+
     QLabel[role="status"] {{ color: {muted}; }}
     QLabel[role="section"] {{ font-weight: 600; }}
     QFrame[role="card"] {{

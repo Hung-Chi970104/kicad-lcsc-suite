@@ -1,9 +1,9 @@
 {
     "$schema": "https://go.kicad.org/pcm/schemas/v1",
-    "name": "LCSC Suite",
+    "name": "EasyAssembly",
     "description": "LCSC/JLCPCB part assignment and library import for KiCad",
     "description_full": "Search the LCSC and JLCPCB parts catalogues, assign LCSC part numbers to your footprints, import symbols and footprints, and export the BOM and CPL files JLCPCB assembly needs. Reports JLC assembly stock and LCSC retail stock separately, because they are different inventories and routinely disagree.",
-    "identifier": "com.lcscsuite.plugin",
+    "identifier": "com.easyassembly.plugin",
     "type": "plugin",
     "author": {
         "name": "Hung-Chi Wang",

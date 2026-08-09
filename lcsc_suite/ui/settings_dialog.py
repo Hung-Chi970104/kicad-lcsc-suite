@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..shared import bom_help_text, dblib
+from . import brand
 
 log = logging.getLogger(__name__)
 
@@ -156,7 +157,7 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None, settings=None) -> None:
         super().__init__(parent)
         self.settings = settings
-        self.setWindowTitle("LCSC Suite settings")
+        self.setWindowTitle(f"{brand.APP_NAME} settings")
         self.setObjectName("settings-dialog")
         self.resize(*DEFAULT_SIZE)
 

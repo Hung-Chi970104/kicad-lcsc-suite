@@ -89,7 +89,7 @@ still never touches the network: it passes `FixtureSource` and
 Three things you need to know:
 
 **Always pass the `lib` exclusion.** Plain `ruff check` walks the vendored
-`lib/` and reports **3445 errors**. `.pre-commit-config.yaml` passes
+`lib/packaging/` and reports **3160 errors**. `.pre-commit-config.yaml` passes
 `--extend-exclude=lib` / `exclude: '(^|/)lib'`; do the same by hand or you
 will drown in noise from code you must not touch.
 
@@ -203,7 +203,7 @@ after two phases of green fixture tests.
 
 **In KiCad.** `install.sh` symlinks the checkout in, so there is no
 reinstall step — edit, restart KiCad, then
-**PCB editor → Tools → External Plugins → LCSC Suite**.
+**PCB editor → Tools → External Plugins → EasyAssembly**.
 
 ```bash
 ./install.sh              # newest KiCad found
@@ -254,7 +254,7 @@ service. JLCPCB's own endpoints are unaffected.
 | Reset one board's plugin state | delete `<board dir>/jlcpcb/project.db` |
 | Inspect assignments | `sqlite3 <board dir>/jlcpcb/project.db 'select * from part_info'` |
 | Reset plugin settings | delete `settings.json` at the repo root |
-| Undo a lib-table edit | restore the `*.lcsc-suite.bak` the importer wrote |
+| Undo a lib-table edit | restore the `*.easyassembly.bak` the importer wrote (`*.lcsc-suite.bak` if it predates the rebrand) |
 
 Adding a per-part field? Extend `Store.PART_INFO_ESTIMATOR_COLUMNS` —
 `ensure_part_info_columns` `ALTER TABLE`s it in on open. Never write a
@@ -269,14 +269,14 @@ worker threads — is visible in the UI.
 
 **A crash before the window exists is invisible in KiCad**, which discards both
 streams of an `exec` plugin. `kicad_plugin/run.sh` redirects them to
-`~/.local/state/lcsc-suite/plugin.log`; that file is the only place a start-up
+`~/.local/state/easyassembly/plugin.log`; that file is the only place a start-up
 traceback can be read.
 
 Common failure signatures:
 
 | Symptom | Look at |
 |---|---|
-| Toolbar button does nothing at all | `~/.local/state/lcsc-suite/plugin.log`. Usually trap 1: a `PYTHONHOME` that `run.sh` did not clear, killing the venv Python before it runs a line |
+| Toolbar button does nothing at all | `~/.local/state/easyassembly/plugin.log`. Usually trap 1: a `PYTHONHOME` that `run.sh` did not clear, killing the venv Python before it runs a line |
 | A write returns success and the board is unchanged | trap 2 — the write must target the parent footprint, not the field; or trap 4 — you re-read between `begin_commit()` and `push_commit()`, where an open commit is invisible |
 | Stale results overwrite fresh ones | missing staleness-token check (`_search_token` / `_detail_token` / `_retail_token` / `assembly_enrichment_generation`) |
 | Stock shows `?` | TLS trust — set `LCSC_CA_BUNDLE` to a CA bundle |

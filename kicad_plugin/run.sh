@@ -1,5 +1,5 @@
 #!/bin/sh
-# Launch the LCSC Suite app for KiCad's "exec" plugin runtime.
+# Launch the EasyAssembly app for KiCad's "exec" plugin runtime.
 #
 # TRAP 1 — the single most confusing first-day failure available.
 #
@@ -31,7 +31,7 @@ PLUGIN_DIR="$(cd -P "$(dirname "$target")" && pwd -P)"
 REPO_ROOT="$(cd -P "$PLUGIN_DIR/.." && pwd -P)"
 
 VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
-LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/lcsc-suite"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/easyassembly"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/plugin.log"
 
@@ -55,6 +55,6 @@ export PYTHONPATH
 # stdout and stderr are the only channel there is: KiCad discards both, so a
 # traceback during start-up is invisible unless it lands in a file.
 {
-    echo "--- $(date) --- launching LCSC Suite"
+    echo "--- $(date) --- launching EasyAssembly"
     exec "$VENV_PYTHON" -m lcsc_suite "$@"
 } >>"$LOG" 2>&1

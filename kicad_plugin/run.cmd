@@ -1,5 +1,5 @@
 @echo off
-rem Launch the LCSC Suite app for KiCad's "exec" plugin runtime, on Windows.
+rem Launch the EasyAssembly app for KiCad's "exec" plugin runtime, on Windows.
 rem
 rem TRAP 1 — KiCad hands its own interpreter's environment down to exec
 rem plugins. A venv Python started with KiCad's PYTHONHOME dies instantly with
@@ -24,7 +24,7 @@ if exist "%PLUGIN_DIR%repo_root.txt" (
 )
 
 set VENV_PYTHON=%REPO_ROOT%\.venv\Scripts\python.exe
-set LOG_DIR=%LOCALAPPDATA%\LCSC Suite
+set LOG_DIR=%LOCALAPPDATA%\EasyAssembly
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 set LOG=%LOG_DIR%\plugin.log
 
@@ -36,5 +36,5 @@ if not exist "%VENV_PYTHON%" (
 )
 
 set PYTHONPATH=%REPO_ROOT%
-echo --- %DATE% %TIME% --- launching LCSC Suite>>"%LOG%"
+echo --- %DATE% %TIME% --- launching EasyAssembly>>"%LOG%"
 "%VENV_PYTHON%" -m lcsc_suite %* >>"%LOG%" 2>&1
