@@ -35,6 +35,7 @@ import os
 import re
 from typing import Optional
 
+from . import kicad_locks
 from .shared import schematicexport, schematicimport
 
 log = logging.getLogger(__name__)
@@ -133,6 +134,10 @@ class SyncPlan:
     #: it means different things: reading gets the last *saved* state, writing
     #: gets overwritten as soon as the user saves in eeschema.
     locked: list = field(default_factory=list)
+    #: Sheets whose lock file outlived the KiCad session that wrote it. Not in
+    #: ``locked`` — nothing has these open — but named separately so the log can
+    #: say which file was disregarded rather than silently ignoring a lock.
+    stale_locks: list = field(default_factory=list)
     #: Sheets named but not found on disk.
     missing: list = field(default_factory=list)
     #: Sheets actually read. Empty means nothing could be read at all, which the
@@ -203,9 +208,28 @@ class SchematicSync:
         root = schematicexport.find_root_schematic(info.project_path, info.name)
         return [root] if root else []
 
+    def lock_states(self, paths) -> list:
+        """Read the lock state of every sheet, dated against this KiCad.
+
+        Logs the leftovers as it goes. A lock that is being disregarded is
+        exactly the kind of thing that has to be visible somewhere: the user
+        saw a refusal last time and there is nothing on screen to explain why
+        this time is different.
+        """
+        states = kicad_locks.inspect_all(paths)
+        for state in states:
+            if state.stale:
+                log.info(state.describe())
+        return states
+
     def locked(self, paths) -> list:
-        """Which of ``paths`` the Schematic Editor currently has open."""
-        return [path for path in paths if schematicexport.is_open_in_editor(path)]
+        """Which of ``paths`` the Schematic Editor currently has open.
+
+        A lock file on its own is not an answer — KiCad leaves them behind when
+        it crashes, and this used to refuse the write and tell the user to
+        close an editor that was already closed. See :mod:`kicad_locks`.
+        """
+        return [state.path for state in self.lock_states(paths) if state.held]
 
     # -- what each side says -------------------------------------------------
 
@@ -250,6 +274,7 @@ class SchematicSync:
         what those currently are.
         """
         assignments = self.schematic_assignments(cleared)
+        states = self.lock_states(paths)
         current = schematicimport.read_schematic(paths)
         changes, skipped = [], []
         for reference in sorted(assignments, key=natural_key):
@@ -273,7 +298,8 @@ class SchematicSync:
             direction="to",
             changes=changes,
             skipped=skipped,
-            locked=self.locked(paths),
+            locked=[state.path for state in states if state.held],
+            stale_locks=[state.path for state in states if state.stale],
             missing=list(current.missing),
             read=list(current.read),
             paths=list(paths),
@@ -340,3 +366,8 @@ class SchematicSync:
 def basenames(paths) -> str:
     """Name a list of sheets the way a message should say them."""
     return ", ".join(os.path.basename(path) for path in paths)
+
+
+def lock_files_for(paths) -> list:
+    """Name the lock files belonging to ``paths``, for a message to quote."""
+    return [kicad_locks.lock_file_for(path) for path in paths]

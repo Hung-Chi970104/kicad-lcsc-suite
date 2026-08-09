@@ -36,9 +36,10 @@ from PySide6.QtCore import QObject
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
+from . import APP_NAME
 from .export import Exporter, ExportResult
 from .kicad_bridge import sanitize_lcsc
-from .schematic import SchematicSync, SyncPlan, basenames
+from .schematic import SchematicSync, SyncPlan, basenames, lock_files_for
 from .search_source import build_source
 from .shared import fab_rules, highlight_terms
 from .ui.assign_dialog import AssignNumberDialog, describe
@@ -239,6 +240,9 @@ class SuiteController(QObject):
             # sites — see MainWindow.parts_reloaded.
             window.parts_reloaded.connect(self.recompute_estimate)
             window.board_count_changed.connect(lambda _count: self.recompute_estimate())
+            window.assembly_count_changed.connect(
+                lambda _count: self.recompute_estimate()
+            )
             window.force_standard.toggled.connect(
                 lambda _checked: self.recompute_estimate()
             )
@@ -1190,6 +1194,12 @@ class SuiteController(QObject):
         the answer is usually "close eeschema and press it again": the editor
         holds the whole document in memory and saving there throws away
         everything written underneath it.
+
+        The lock file is named because the evidence is a file, not a window.
+        Leftovers from a crashed KiCad are recognised and ignored now
+        (:mod:`kicad_locks`), but a lock this session could have written and a
+        lock eeschema is really holding look identical, and a user who has no
+        Schematic Editor on screen needs to be told what to go and look at.
         """
         answer = QMessageBox.warning(
             self.window,
@@ -1198,6 +1208,9 @@ class SuiteController(QObject):
             f"{basenames(plan.locked)}\n\n"
             "The editor holds its own copy, so anything written now is lost as "
             "soon as you save there. Close the Schematic Editor and try again."
+            "\n\nIf no Schematic Editor is open, KiCad has left a lock file "
+            f"behind — {basenames(lock_files_for(plan.locked))} — and deleting "
+            "it clears this."
             "\n\nWrite to the file anyway?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -1249,7 +1262,7 @@ class SuiteController(QObject):
         """
         QMessageBox.critical(
             self.window,
-            "LCSC Suite",
+            APP_NAME,
             f"KiCad did not accept the request to {what}.\n\n"
             f"{exc}\n\nThe board has been left as it was; see the log for details.",
         )

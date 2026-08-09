@@ -14,10 +14,10 @@ server and no build artifact — `install.sh` builds a virtualenv and symlinks
 runs.
 
 ```text
-KiCad 10 (pcbnew)                        LCSC Suite (separate process)
+KiCad 10 (pcbnew)                        EasyAssembly (separate process)
 │                                         │
 ├─ reads plugins/lcsc_suite/plugin.json   │
-│    └─ toolbar button "LCSC Suite"       │
+│    └─ toolbar button "EasyAssembly"     │
 │                                         │
 ├─ on click: exec run.sh ───────────────► launcher clears PYTHONHOME,
 │    env: KICAD_API_SOCKET                │  runs the venv's python -m lcsc_suite
@@ -37,6 +37,36 @@ a second invocation to find. [`single_instance.py`](../lcsc_suite/single_instanc
 is a `QLocalServer` whose *binding* is the lock and which doubles as the "come
 forward" channel. It is scoped **per board**: two windows on one board would
 share a project database and quietly overwrite each other.
+
+The other end of that lifetime is [`board_watch.py`](../lcsc_suite/board_watch.py).
+Out of process, nothing tells the app that its board has been closed, so it
+polls `Board.still_open()` every two seconds and closes the window when the
+answer has been no three times running. Two things scope it to **one board in
+one editor**, which is what makes two projects open at once safe:
+
+* the connection pins the instance — `connect()` dials the `KICAD_API_SOCKET`
+  KiCad set when it launched *this* process;
+* `_Ipc.still_open()` matches the open PCB documents on *(project path, board
+  filename)*, never on "is any board open", so a second project in the same
+  instance is not mistaken for ours.
+
+The tolerance is the part that matters. KiCad serves the API from its main loop,
+so a long DRC or a plot makes a poll time out, and a timed-out request is
+indistinguishable here from one nobody received — one "no" is not evidence, and
+three in a row is six seconds of silence no editor operation produces. The poll
+asks with its own 800ms deadline rather than the one writes use: it is
+unprompted, it runs on the thread that paints, and the tolerance already makes a
+late answer survivable. Polling is also skipped while one of our own modal
+dialogs is up, so the close never lands on top of the "write these to the
+schematic?" question that exists to stop unexported removals being lost.
+
+**Shutting down is an ordered close, not a `quit()`.** `quit()` leaves the event
+loop without running `closeEvent` on anything, and the Explorer's `closeEvent`
+is where its fetches are cancelled and its geometry and two settings are
+written — so the windows this window owns are closed first, front-most first,
+then the main window (whose close may raise the schematic prompt, which must not
+appear behind a catalogue window), and the quit is only the backstop for anything
+that ignored its close.
 
 The object graph is deliberately flatter than the dialog it replaced:
 
@@ -376,7 +406,8 @@ stores of the same fact and the plugin does not get to decide which one wins.
 "To schematic"   -> export_to_schematic -> sync_schematic(interactive=True)
        _schematic_paths        find_root_schematic: <board>.kicad_sch, else
                                the .kicad_pro name, else a lone sheet
-       is_open_in_editor       ~<name>.kicad_sch.lck -> refuse (or override)
+       is_open_in_editor       ~<name>.kicad_sch.lck, dated against the running
+                               KiCad -> refuse (or override)   [kicad_locks.py]
        _confirm_export         reads the sheets to name what gets overwritten
   -> SchematicExport(assignments).load_schematic([root])       [schematicexport.py]
        follows Sheetfile into the hierarchy, <name>_old backup
@@ -402,6 +433,13 @@ Rules that keep either direction from eating data:
   in memory; writing underneath it means the fields vanish on the user's next
   save. Reading it *is* allowed — the import warns that the disk copy may lag
   what is on screen rather than refusing.
+* **A lock file is not a locked schematic.** KiCad leaves `~<name>.lck` behind
+  when it is force-quit, and the refusal it used to cause could not be acted on
+  — the editor it named was already closed. `kicad_locks` dates the lock
+  against the running KiCad's IPC socket, whose timestamp is that session's
+  start; a lock older than the session is reported in `SyncPlan.stale_locks`,
+  logged, and disregarded. A session that cannot be dated leaves every lock
+  live, because being wrong the other way costs the user's edits.
 * **No change, no write.** A sheet with nothing to update is left
   byte-for-byte alone, backup included.
 * **Confirm before overwriting.** Both directions build a per-reference diff
@@ -420,8 +458,9 @@ is gone when the window closes.
 
 ### Import symbol + footprint + 3D
 
-`lcsc/importer.py::LcscImporter.import_part` drives the vendored converter
-and writes a library triplet, project-local by default:
+`lcsc/importer.py::LcscImporter.import_part` drives the `easyeda2kicad`
+converter — an installed dependency, imported lazily and reported rather than
+raised when absent — and writes a library triplet, project-local by default:
 
 ```text
 <board dir>/lcsc-lib/LCSC.kicad_sym
@@ -431,7 +470,7 @@ and writes a library triplet, project-local by default:
 
 `register_libraries` / `_ensure_lib_table_entry` then add entries to the
 project's `sym-lib-table` and `fp-lib-table` using `${KIPRJMOD}`, backing up
-any table it edits to `*.lcsc-suite.bak`. Import outside the project dir and
+any table it edits to `*.easyassembly.bak`. Import outside the project dir and
 it registers globally with an absolute path instead (`is_inside` decides).
 **KiCad caches lib-tables at startup**, so a fresh import needs a restart to
 appear in the chooser — expected, not a bug to fix.
@@ -475,6 +514,20 @@ bom_estimation/view.py      pure: formatting + view models
 bom_estimation/help_text.py copy
 ui/bom_estimator.py         Qt glue: the summary line and the enrichment pass
 ```
+
+**Two quantities.** `board_count` is the bare PCBs ordered, `assembly_count`
+how many of them get populated, and they are genuinely independent: JLC will
+not fabricate fewer than five but will assemble as few as asked. Components and
+per-joint fees follow the assembly count; setup, stencil, THT setup and the
+extended-part fee are charged once per order; PCB fabrication is not priced
+here at all. `assembly_count=None` means "all of them", which is what every
+call predating the split means. The `qty≥50` Standard trigger counts assembled
+boards — it is a fact about the assembly line, not about the panel.
+
+The estimate is a **floor**, and the summary line says so whenever a part could
+not be priced: parts attrition and per-part minimum purchase quantities are not
+modelled, and a part nobody could price contributes nothing rather than a
+guess.
 
 Keep `pricing.py` free of any toolkit and of transport. Missing metadata is filled by
 `enrichment/providers.py` (`LCSCAssemblyMetadataProvider`, rate-limited to
