@@ -14,10 +14,71 @@ otherwise come looking for.
 Its ancestor is [CODE-REVIEW.md](CODE-REVIEW.md) (2026-08-03), which is a
 **pre-migration** document: most of its High and Medium findings lived in
 `mainwindow.py`, `datamodel.py`, `fabrication.py` and `partdetails.py`, and the
-Phase 8 cutover deleted those files. §6 lists which of its findings died that
+Phase 8 cutover deleted those files. §7 lists which of its findings died that
 way, so nobody re-derives a fix for a file that is gone.
 
-Order is by what it costs a user, not by where it lives.
+Order is by what it costs a user, not by where it lives — **§0 says which two to
+do next**, and why those two.
+
+---
+
+## 0. Next up — start here
+
+Agreed on 2026-08-09: **B7 first, then B4.** They are the only two entries whose
+cost is measured in the user's own data rather than in a column, a sort order or
+a re-open. Everything else on this list can wait behind them.
+
+Neither has been started. Both are self-contained — no design decision is owed
+first, and neither touches the assignment funnel or the IPC bridge.
+
+### 1. B7 — the schematic writer (§2 below)
+
+The one whose failure mode is "your schematic is gone". Do it first even though
+it needs a crash to bite, because the thing at risk is a document the user made.
+
+- **Shape of the fix**, all in `_commit` at
+  [`schematicexport.py:226`](../lcsc_suite/schematicexport.py#L226): write
+  `path + ".tmp"`, `os.replace` it into place, **copy** the previous file to the
+  backup rather than renaming it out of the way, and open with `newline=""`
+  keeping the terminators the sheet already had.
+- **The test changes with it.** `tests/test_schematic_sync.py` asserts that
+  `_old` exists; that is the current contract, so decide what the backup is
+  called and how many of them there are before touching the code.
+- **The line-ending half needs a test of its own.** A CRLF sheet and an LF sheet
+  through the same writer, each coming out the way it went in — nothing today
+  covers it, and Windows CI would not catch it either, because the gate compares
+  screenshots and geometry, not files.
+- Do **not** try to fix this and B2/B3 in one pass. This one deserves its own
+  commit and its own reading.
+
+### 2. B4 — the six interpolated statements (§2 below)
+
+The one that bites with ordinary input: an apostrophe.
+
+- **Parameterise all six**, then remove **`S608`** from `pyproject.toml`'s
+  `ignore` list so the pattern cannot regrow. Note it currently appears in both
+  `select` and `ignore`, with `ignore` winning.
+- **The model to copy is already in the tree**:
+  [`store.py:490`](../lcsc_suite/store.py#L490) builds a placeholder list
+  correctly for exactly this shape.
+- **`library.py` has no tests at all.** That is the real cost here, and it is
+  also the opportunity: the file is pure Python plus SQLite, so a temp-file
+  fixture covers it. A regex containing `'` that can be inserted, found, edited
+  and deleted is the test this fix exists to pass.
+- B5 lives two functions away and is one line, so it is reasonable to take it in
+  the same pass — but verify the legacy `parts.mapping` shape against an old
+  database first, because the swallowed exception means nobody has ever seen that
+  migration run.
+
+**Not on this list, deliberately:** the PyInstaller freeze. It is the only thing
+between this and an install path a stranger can use, so it outranks both of the
+above *for a release* — but it is a build problem, not a defect, and it lives in
+[QT_MIGRATION_PLAN.md](QT_MIGRATION_PLAN.md) §10 with the other deferred
+features. Pick it up when the question is shipping rather than correctness.
+
+Before either: `.venv/bin/python -m pytest -q` and both ruff commands from
+`CLAUDE.md`, so a failure afterwards is yours. Neither of these two changes any
+screen, so no screenshot is owed — but say so rather than skipping it silently.
 
 ---
 
