@@ -274,6 +274,27 @@ defines a promise.
   with fakes and a fake cannot be wrong about an attribute name in the same way.
   The write paths are unchanged by that commit; re-run the full check anyway
   before trusting the bridge for a release.
+- **The cross-platform geometry gate no longer passes against its own
+  reference, and it is the reference that has aged.** Run on Windows against
+  `docs/screens/geometry.txt` on 2026-08-10 with PySide6 6.11.1, it reports two
+  structural problems and six window-size differences — on an **unmodified**
+  checkout, so nothing in the tree caused them:
+  - `photo-viewer` (light and dark): the tree diverges at line 6, where the
+    reference has `QWidget#qt_scrollarea_vcontainer` and the run has
+    `QWidget#qt_scrollarea_hcontainer`. Both are `QAbstractScrollArea`
+    internals; Qt builds them in the other order now. Nothing in
+    `photo_viewer.py` decides this.
+  - `export-summary` (Δ85px wide) and `assign-dialog` (Δ5px tall) — the two
+    dialogs that size themselves from their text, which §on window sizes in
+    `compare_geometry.py` already names as the exception it grants a budget to.
+    85px is well past that budget.
+
+  So the gate currently fails for reasons that are a Qt version and a font, and
+  a real regression would land on top of a report that already says FAIL. The
+  fix is to regenerate `geometry.txt` **on macOS** at a pinned PySide6 — which
+  is why this is here and not fixed: it cannot be done from Windows, and
+  regenerating it anywhere else would replace a macOS reference with something
+  that is not one.
 
 ## 5. Deferred features, so they are not mistaken for bugs
 
