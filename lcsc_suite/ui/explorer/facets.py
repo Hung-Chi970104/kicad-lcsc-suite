@@ -26,7 +26,7 @@ should cost one rebuild.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QGridLayout,
     QLabel,
@@ -84,9 +84,6 @@ class FacetFilter(QToolButton):
         self.setMaximumWidth(240)
 
         menu = QMenu(self)
-        # Kept open across ticks: the gesture this control is for is picking
-        # several values, and a menu that closes on the first one turns that
-        # into one trip per value.
         menu.setToolTipsVisible(True)
         for value, count in self._values:
             action = menu.addAction(f"{value}  ({count})")
@@ -97,8 +94,37 @@ class FacetFilter(QToolButton):
         clear = menu.addAction("Clear this attribute")
         clear.triggered.connect(self.clear)
         self._menu = menu
+        # Kept open across ticks by ``eventFilter``: the gesture this control is
+        # for is picking several values, and a menu that closes on the first one
+        # turns that into one trip per value. An event filter rather than a
+        # QMenu subclass, because the menu's *class name* appears in the
+        # committed cross-platform geometry reference and renaming it there
+        # would fail that gate for a reason having nothing to do with layout.
+        # Installed only now: the filter reads ``self._menu``, and addAction()
+        # above already sends this object events.
+        menu.installEventFilter(self)
         self.setMenu(menu)
         self._restate()
+
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt override
+        """Swallow the release that would close the menu on a ticked value.
+
+        ``QMenu.mouseReleaseEvent`` triggers the action under the cursor and
+        then dismisses itself, so ticking one value ended the gesture and
+        picking three tolerances meant opening the menu three times. Toggling
+        the action here and consuming the event leaves the menu up; the release
+        is only claimed for a value, so ``Clear this attribute`` and a click
+        outside still close it the way every other menu does.
+        """
+        if watched is self._menu and event.type() == QEvent.Type.MouseButtonRelease:
+            action = self._menu.actionAt(event.position().toPoint())
+            if action is not None and action.isCheckable() and action.isEnabled():
+                # toggle(), not setChecked(): it emits ``toggled`` either way,
+                # which is what _on_toggled and therefore the whole filter runs
+                # on.
+                action.toggle()
+                return True
+        return super().eventFilter(watched, event)
 
     @property
     def name(self) -> str:

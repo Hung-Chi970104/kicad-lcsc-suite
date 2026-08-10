@@ -162,6 +162,13 @@ class ExplorerWindow(QDialog):
         #: Set by the selection change, cleared by the next press. See
         #: ``eventFilter`` and ``_on_cell_clicked``.
         self._selected_by_this_press = False
+        #: True once a gesture has turned into a double-click, until the next
+        #: press. The release that ends a double-click emits ``clicked`` like
+        #: any other, and without this the pane would toggle twice.
+        self._double_click_gesture = False
+        #: The hit under the cursor when the gesture began, which is the part
+        #: the user aimed at. See ``eventFilter``.
+        self._gesture_hit = None
         #: True while the pane is being moved. See ``_set_details_shown``.
         self._placing = False
 
@@ -849,15 +856,29 @@ class ExplorerWindow(QDialog):
         self._load_details(hit)
 
     def _on_row_activated(self, index) -> None:
-        """Assign the double-clicked part's number, then get out of the way.
+        """Qt's own ``doubleClicked``, which only some double-clicks produce.
+
+        Kept connected for the gestures ``eventFilter`` does not claim — a
+        double-click that began on the inline placeholder rather than on a part
+        — and because it is the entry point the tests drive. The ordinary route
+        is ``eventFilter``; see there for why this signal cannot be relied on.
+        """
+        self._activate(index.data(HIT_ROLE))
+
+    def _activate(self, hit) -> None:
+        """Assign ``hit``'s number to the footprints, then get out of the way.
 
         Double-click is the gesture a trackpad produces by accident, so it does
         the one thing here that is cheap to undo: it writes the number onto the
         selected footprints. Importing symbol, footprint and 3D model into a
         library on disk is a side effect nobody wants to discover they
         triggered, so it stays behind the buttons in the action bar.
+
+        The number written is the *selected* row's, through :meth:`_on_assign`.
+        That is the same part ``hit`` names — the press selects what it lands on
+        — and going through the one assign path keeps this from becoming a
+        second spelling of it.
         """
-        hit = index.data(HIT_ROLE)
         if hit is None:
             return
         if not self.references:
@@ -877,12 +898,37 @@ class ExplorerWindow(QDialog):
         The alternative — leaving the flag set until a click consumes it — gets
         it wrong for a row reached with the arrow keys: the stale flag would eat
         the first click on it, and the pane would need clicking twice to close.
+
+        **Double-click-to-assign is driven from here, not from Qt's
+        ``doubleClicked``, because that signal does not arrive.**
+        ``QAbstractItemView::mouseDoubleClickEvent`` emits it only while the
+        index under the cursor still equals the one the press recorded, and
+        opening the detail pane on the pressed row moves the grid out from
+        under the cursor before the second click lands: inline, the placeholder
+        row is dropped from above and re-inserted below, renumbering everything
+        between; in the side panel, the grid narrows and the columns are refit.
+        Either way the index differs, Qt takes the double-click for a fresh
+        press, and nothing is ever assigned — which is precisely the report,
+        "it is very often read as opening or closing the panel".
+
+        So the part is recorded at the press, when the grid still holds still,
+        and the ``MouseButtonDblClick`` that Qt does deliver reliably is what
+        acts on it. The event is then consumed, so the view cannot go on to
+        reinterpret it as the press that would move the selection again.
         """
-        if (
-            watched is self.results.viewport()
-            and event.type() == QEvent.Type.MouseButtonPress
-        ):
-            self._selected_by_this_press = False
+        if watched is self.results.viewport():
+            if event.type() == QEvent.Type.MouseButtonPress:
+                self._selected_by_this_press = False
+                self._double_click_gesture = False
+                self._gesture_hit = self.results.indexAt(
+                    event.position().toPoint()
+                ).data(HIT_ROLE)
+            elif event.type() == QEvent.Type.MouseButtonDblClick:
+                self._double_click_gesture = True
+                hit, self._gesture_hit = self._gesture_hit, None
+                if hit is not None:
+                    self._activate(hit)
+                    return True
         return super().eventFilter(watched, event)
 
     def _on_cell_clicked(self, index) -> None:
@@ -898,6 +944,13 @@ class ExplorerWindow(QDialog):
         opened the pane for a newly picked row, so without
         ``_selected_by_this_press`` every first click would open the pane and
         shut it again in the same gesture.
+
+        This acts on the spot rather than waiting to see whether a double-click
+        follows. Holding it back for ``doubleClickInterval`` is the obvious way
+        to keep the two gestures apart and it is the wrong one: the interval is
+        half a second by default, every collapse pays it, and it buys only what
+        recording the aimed-at row in ``eventFilter`` already gives for free.
+        What a double-click must not do is toggle the pane *twice* — see below.
         """
         hit = index.data(HIT_ROLE)
         if index.column() == COLUMN_INDEX["photo"]:
@@ -908,6 +961,12 @@ class ExplorerWindow(QDialog):
         if self._selected_by_this_press or hit is None or current is None:
             return
         if hit.lcsc != current.lcsc:
+            return
+        if self._double_click_gesture:
+            # The release that *ends* a double-click emits ``clicked`` like any
+            # other. Without this the pane would collapse on the first release
+            # and reopen on the second, which is the flicker the gesture was
+            # reported for. One toggle, the same one a single click performs.
             return
         self._set_details_shown(not self._details_shown)
 

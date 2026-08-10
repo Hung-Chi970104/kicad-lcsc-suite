@@ -333,12 +333,19 @@ class PartList:
         claiming an assignment the board does not have is what puts a part in the
         BOM that JLC will never be told to place.
 
-        ``stock`` is written through as the caller gave it, ``None`` included:
-        the Explorer knows a figure at assignment time and a typed number does
-        not, and ``None`` is "nobody answered", which is not ``0``. Type and
-        params are deliberately *not* written here — they are cache-derived, the
-        cache may not have this number yet, and :meth:`rows` resolves them on the
-        next rebuild.
+        ``stock`` is written through as the caller gave it — the Explorer knows
+        a figure at assignment time and a typed number does not. ``None`` means
+        "the caller does not know", and it is answered here from the figure this
+        board already holds for the *same number*, because stock is a property
+        of the part number and not of the footprint wearing it: without that,
+        pasting a number onto a second reference showed ``?`` in a column that
+        was showing a figure for that very number one row up. Only a figure
+        already confirmed is reused, so ``?`` still means "nobody answered" and
+        is still distinct from a confirmed ``0``.
+
+        Type and params are deliberately *not* written here — they are
+        cache-derived, the cache may not have this number yet, and :meth:`rows`
+        resolves them on the next rebuild.
 
         Returns the references that were actually written, which is the subset
         that exists on the board.
@@ -348,7 +355,30 @@ class PartList:
             raise ValueError(
                 "That is not an LCSC number (expected C followed by digits)"
             )
+        if stock is None:
+            stock = self.known_stock_for(number)
         return self._write_lcsc(references, number, stock)
+
+    def known_stock_for(self, number: str) -> Optional[int]:
+        """Return the stock figure this board already holds for ``number``.
+
+        The store keeps stock per reference, but the figure describes the part
+        number, so any row already carrying that number has the answer for all
+        of them. Read before the write in :meth:`assign`, so the row being
+        overwritten cannot be the one consulted.
+
+        ``None`` when no row has a figure — which keeps "nobody answered"
+        answerable only by somebody actually answering.
+        """
+        if not number:
+            return None
+        for part in self.store.read_all():
+            if (part.get("lcsc") or "") != number:
+                continue
+            figure = as_stock(part.get("stock"))
+            if figure is not None:
+                return figure
+        return None
 
     def clear(self, references: Sequence[str]) -> list[str]:
         """Remove the LCSC number from every reference, board first.
