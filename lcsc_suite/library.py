@@ -424,7 +424,10 @@ class Library:
         3. nothing, which the caller must read as "not looked up yet".
 
         Refreshing stale and missing entries is the background refresher's job
-        (``mainwindow.start_part_detail_refresh``), not this method's.
+        (``ui.part_detail_refresh.PartDetailRefresher``), not this method's. If
+        that stops running, this returns ``{}`` forever and three columns go
+        blank — which is exactly what happened between the Phase 8 cutover and
+        the refresher being rewritten for the Qt app.
         """
         cached = self.get_cached_part_details(number)
         if cached:

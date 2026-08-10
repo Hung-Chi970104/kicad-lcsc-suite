@@ -158,7 +158,10 @@ search and installs a host breaker that refuses everything else. Same shape as
 - **Type / JLC Stock / LCSC Params columns** →
   [`lcsc/details.py`](lcsc_suite/lcsc/details.py) builds the detail mapping;
   `Library.get_part_details` resolves cache → optional bulk DB → `{}` and never
-  blocks. The column reports **JLC assembly** stock, never LCSC retail.
+  blocks. **Blank columns mean an empty cache, not a rendering bug** — the
+  background fill that writes it is
+  [`ui/part_detail_refresh.py`](lcsc_suite/ui/part_detail_refresh.py). The
+  column reports **JLC assembly** stock, never LCSC retail.
 - **BOM/CPL output** → [`fab_rules.py`](lcsc_suite/fab_rules.py) for the rules,
   [`export.py`](lcsc_suite/export.py) for where a position and an angle come
   from.
