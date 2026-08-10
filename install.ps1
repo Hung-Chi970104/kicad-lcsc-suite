@@ -47,7 +47,13 @@ $Venv = Join-Path $Src '.venv'
 # its converters decide the on-disk shape of every symbol, footprint and 3D
 # model, and it is AGPL-3.0, so pip fetches it rather than this repo shipping
 # it. Keep in step with APP_REQUIREMENTS in install.sh.
-$AppRequirements = @('PySide6>=6.7,<7', 'kicad-python>=0.4,<1', 'easyeda2kicad==1.0.1')
+# requests is not optional: library.py imports it at module scope, and
+# shared.py -> kicad_bridge.py pulls that in, so a venv without it cannot start
+# the app at all. Dev machines have it via the db_build tooling; a fresh venv
+# does not, and easyeda2kicad does not bring it.
+$AppRequirements = @(
+    'PySide6>=6.7,<7', 'kicad-python>=0.4,<1', 'easyeda2kicad==1.0.1', 'requests>=2.28'
+)
 
 if ($Wx) {
     Write-Error 'The wx plugin was removed at the Phase 8 cutover. See docs/QT_MIGRATION_PLAN.md; this installs the Qt app.'

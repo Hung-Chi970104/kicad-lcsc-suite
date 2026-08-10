@@ -13,6 +13,22 @@ would churn every module and test in the repository to change nothing a user
 can see. :data:`APP_NAME` below is the name a user sees.
 """
 
+import os
+import sys
+
+# ``core.version`` imports ``packaging``, which is still vendored in ./lib as a
+# fallback for an environment that has no installed copy. Put it last-resort
+# rather than first: an installed packaging should win, and nothing else in the
+# directory is ours to shadow with.
+#
+# This belongs at the package root, not in a subpackage: ``shared`` reaches
+# ``core.version`` through ``schematicexport`` without importing ``lcsc`` first,
+# so a bootstrap that ran only on ``import lcsc_suite.lcsc`` left the fallback
+# unregistered on the app's real start-up path and the app died on a fresh venv.
+_LIB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib")
+if os.path.isdir(_LIB) and _LIB not in sys.path:
+    sys.path.append(_LIB)
+
 #: The product name. Defined here, at the toolkit-free root, rather than in
 #: :mod:`lcsc_suite.ui.brand` where the rest of the identity lives, because
 #: :mod:`lcsc_suite.kicad_bridge` needs it for the commit messages it writes
