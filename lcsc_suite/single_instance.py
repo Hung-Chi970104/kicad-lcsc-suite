@@ -20,7 +20,7 @@ import hashlib
 import logging
 import os
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QEventLoop, QObject, QTimer, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 log = logging.getLogger(__name__)
@@ -116,6 +116,18 @@ def notify_existing(name: str) -> bool:
         return False
     socket.write(RAISE_MESSAGE)
     socket.flush()
-    socket.waitForBytesWritten(CONNECT_TIMEOUT_MS)
+    if socket.bytesToWrite():
+        # Windows only, and it cost the whole feature there: the channel is a
+        # named pipe, QLocalSocket writes to it asynchronously, and
+        # ``waitForBytesWritten`` does not drive that write — it returns False
+        # with all six bytes still queued. Closing then threw them away, so the
+        # incumbent saw a connection arrive, saw it disconnect with zero bytes
+        # available, and never came forward. Only the event loop moves them, so
+        # turn it until it has. macOS and Linux empty the buffer in flush() and
+        # never reach this.
+        loop = QEventLoop()
+        socket.bytesWritten.connect(lambda _n: loop.quit())
+        QTimer.singleShot(CONNECT_TIMEOUT_MS, loop.quit)
+        loop.exec()
     socket.disconnectFromServer()
     return True

@@ -28,6 +28,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import socket as socket_module
 
 import pytest
 
@@ -195,7 +196,11 @@ def test_a_lock_left_by_a_dead_kicad_is_not_a_sheet_in_the_editor(
     """
     path = write_sheet(tmp_path, [symbol(ASSIGNED, "C111")])
     lock = tmp_path / f"~{ROOT_SHEET}.lck"
-    lock.write_text('{"hostname":"Mac","username":"nobody"}', encoding="utf-8")
+    # This machine's own name, not a literal: a lock naming another host is
+    # FOREIGN, which outranks STALE, so hard-coding one made the test pass only
+    # on a machine actually called that. test_kicad_locks.py does the same.
+    owner = {"hostname": socket_module.gethostname(), "username": "nobody"}
+    lock.write_text(json.dumps(owner), encoding="utf-8")
     os.utime(lock, (50.0, 50.0))
     monkeypatch.setattr(kicad_locks, "kicad_session_start", lambda: 100.0)
     # Same user, or it reads as somebody else's lock rather than a leftover.

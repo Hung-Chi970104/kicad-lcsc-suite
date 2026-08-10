@@ -38,7 +38,13 @@ VENV="$SRC/.venv"
 # fixed commit, and its converters decide the on-disk shape of every symbol,
 # footprint and 3D model written into a user's library. It is AGPL-3.0 and is
 # deliberately NOT redistributed by this repository — pip fetches it here.
-APP_REQUIREMENTS=("PySide6>=6.7,<7" "kicad-python>=0.4,<1" "easyeda2kicad==1.0.1")
+# requests is not optional: library.py imports it at module scope, and
+# shared.py -> kicad_bridge.py pulls that in, so a venv without it cannot start
+# the app at all. Dev machines have it via the db_build tooling; a fresh venv
+# does not, and easyeda2kicad does not bring it.
+APP_REQUIREMENTS=(
+    "PySide6>=6.7,<7" "kicad-python>=0.4,<1" "easyeda2kicad==1.0.1" "requests>=2.28"
+)
 MIN_PYTHON="3.12"
 
 UNINSTALL=0
