@@ -221,27 +221,44 @@ part cache first, then the bulk DB if one is present, then gives up — and it
 **never** touches the network, because it is called once per assigned part
 while the footprint list is being built on the UI thread. Serving a *stale*
 cache row unconditionally is deliberate: that is what makes an offline session
-work, and a day-old stock figure beats a blank column. Filling and refreshing
-the cache is the Explorer's job, on a worker pool, paced by the host breaker
-and the fill caps rather than by a fixed interval.
+work, and a day-old stock figure beats a blank column.
+
+**Something else has to fill it.** That something is
+[`ui/part_detail_refresh.py`](../lcsc_suite/ui/part_detail_refresh.py), wired to
+`MainWindow.parts_reloaded` by the controller, on a one-worker pool paced at
+`REFRESH_INTERVAL` and capped at `REFRESH_LIMIT` distinct numbers per pass. It
+went missing at the Phase 8 cutover — the wx plugin's
+`mainwindow.start_part_detail_refresh` was the only writer, nothing replaced it,
+and the sole remaining caller of `set_cached_part_details` was the probe seeding
+a throwaway directory. So the committed screenshots showed Type / JLC Stock /
+LCSC Params filled while every real board showed them blank.
+
+Four rules it enforces, each of which is a bug if dropped:
+
+- **an empty answer is never cached.** A host that 403s today would otherwise
+  overwrite details fetched correctly yesterday; refusals are remembered for the
+  session instead, which is also what stops every reload re-asking;
+- **a fetched blank never overwrites a confirmed stock figure.** The Explorer
+  records a count at assignment time, and the retail-only fallback resolves a
+  description with no stock — writing that back would turn a real number into
+  the `?` that means nobody answered;
+- **a generation token**, bumped when the assignments change, so a result
+  arriving after a reassignment cannot land on the reference that now holds a
+  different part;
+- **it fetches through the search source**, never `lcsc/details.py` directly.
+  `details.fetch_details` reaches `api.jlc_search`, whose vendored fallback
+  carries its own transport and so never passes the host breaker — the same hole
+  `FixtureSource.search` was written to close, which is why
+  `FixtureSource.part_details` answers `{}`.
 
 Serving a stale row has a cost the TTL alone cannot pay off: JLC restocks a
-common part by millions overnight, so a cached `0` can outlive its truth by
-most of a day, and the column says nothing about its own age. **Selecting a
-row therefore refetches it regardless of cache age** —
-`start_part_detail_refresh(references, force=True)`, debounced by
-`SELECTION_REFRESH_DELAY_MS` so arrow-keying down the list is one refresh and
-not one per row, and rate-limited per part by
-`SELECTION_REFRESH_COOLDOWN_SECONDS` (the API layer's own cache lifetime,
-below which there is nothing new to learn). Two constraints on that path:
-
-- it is capped at `SELECTION_REFRESH_MAX_PARTS` distinct LCSC numbers, so
-  select-all is a bulk gesture rather than a request storm;
-- a forced refresh **must not** bump `part_detail_generation`.
-  `on_part_details_progress` discards any event whose generation is not the
-  current one, so bumping it would mean one click during the startup sweep
-  threw away every answer that sweep had left to deliver. Reassignment — the
-  mutation the guard exists for — still bumps it.
+common part by millions overnight, so a cached `0` can outlive its truth by most
+of a day, and the column says nothing about its own age. The wx plugin answered
+that by refetching the selected row regardless of cache age
+(`start_part_detail_refresh(references, force=True)`, debounced and per-part
+rate-limited). **The Qt app does not do this yet** — its fill is the TTL sweep
+only. `Refresh data` in the Explorer drops `api.py`'s five-minute cache, not
+this one.
 
 `Library.has_bulk_database` records whether a catalogue is present. There is no
 `UPDATE_NEEDED` state any more — an absent parts DB is a missing optional

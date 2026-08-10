@@ -45,7 +45,7 @@ import logging
 import os
 from typing import Any, Optional
 
-from .shared import lcsc_api as api
+from .shared import lcsc_api as api, lcsc_details as details
 
 log = logging.getLogger(__name__)
 
@@ -149,6 +149,17 @@ class LiveSource:
     def image(self, url: str) -> Optional[bytes]:
         """Download an image, or ``None``."""
         return api.fetch_image(url)
+
+    def part_details(self, lcsc: str) -> dict:
+        """Resolve one part's Type / Stock / Params / price, or ``{}``.
+
+        The main window's background cache fill (§5.1's three API columns) gets
+        its answers here. ``lcsc/details.py`` is what does the resolving; going
+        through the source means the fill obeys the same offline seam as
+        everything else the app fetches, rather than being the one path that
+        reaches the wire from a window built against a fixture.
+        """
+        return details.fetch_details(lcsc)
 
     def cad_data(self, lcsc: str) -> dict:
         """Return EasyEDA's CAD record, which the SVG previews render from.
@@ -256,6 +267,25 @@ class FixtureSource(LiveSource):
         is asking. The capture has all 100 rows, so the answer is no.
         """
         return not any("wmsc.lcsc.com" in key for key in self._payloads)
+
+    def part_details(self, lcsc: str) -> dict:
+        """Answer nothing, because the capture cannot answer this one safely.
+
+        The same hole :meth:`search` documents, one level up.
+        ``details.fetch_details`` calls ``api.jlc_search``, whose
+        ``easyeda2kicad`` fallback carries its own transport and so never passes
+        the host breaker — so a number the capture does not hold would go
+        straight out to the network from a source whose whole contract is that
+        it cannot.
+
+        Returning ``{}`` costs the fixture nothing it had: the probe seeds the
+        part cache from ``fixtures/part_details.json`` through
+        ``parts.open_fixture_library``, so the three API columns in the
+        committed screenshots are filled before this pass ever runs — and a pass
+        that finds them fresh queues no lookups at all.
+        """
+        del lcsc
+        return {}
 
     def clear_cache(self) -> None:
         """Re-install the fixture, the way Refresh re-queries the endpoints."""

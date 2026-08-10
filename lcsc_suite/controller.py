@@ -53,6 +53,7 @@ from .ui.corrections_dialog import (
 from .ui.explorer import ExplorerWindow
 from .ui.main_window import MainWindow
 from .ui.mappings_dialog import MappingsDialog
+from .ui.part_detail_refresh import PartDetailRefresher
 from .ui.part_details_dialog import PartDetailsDialog
 from .ui.schematic_dialog import SchematicSyncDialog, nothing_to_do_message
 from .ui.settings_dialog import SettingsDialog
@@ -169,6 +170,16 @@ class SuiteController(QObject):
             if parts is not None
             else None
         )
+        #: Fills the part-detail cache the three API columns read from. Same
+        #: rule as the estimator: no source means no network, so a caller that
+        #: has not chosen one gets a pass that does nothing. Without it those
+        #: columns stay blank forever on a real board — nothing else in the app
+        #: writes that cache. See :mod:`lcsc_suite.ui.part_detail_refresh`.
+        self.detail_refresher = (
+            PartDetailRefresher(self.window, parts, source=source)
+            if parts is not None
+            else None
+        )
         #: References whose number this session *removed*. "To schematic" needs
         #: them: a reference merely blank in the store may be one the schematic
         #: has and the board never picked up, and exporting those two states
@@ -249,6 +260,17 @@ class SuiteController(QObject):
             # The window's own start-up reload happened before this object
             # existed, so its signal went nowhere. Catch up once.
             self.recompute_estimate()
+
+        if self.detail_refresher is not None:
+            # One connection, for the same reason the estimator has one: six
+            # places rebuild the list and none of them should have to remember
+            # a seventh call.
+            window.parts_reloaded.connect(self.refresh_part_details)
+            # A filled cache carries price ladders as well as the three columns,
+            # so the estimate is worth recomputing once a batch drains.
+            self.detail_refresher.finished.connect(self.recompute_estimate)
+            # Same catch-up as above: the start-up reload predates this object.
+            self.refresh_part_details()
 
         self._publish_undo()
 
@@ -941,6 +963,20 @@ class SuiteController(QObject):
             self.estimator.enrich()
         except Exception:  # noqa: BLE001 - likewise; the next reload retries
             log.exception("Could not start the assembly metadata lookup")
+
+    def refresh_part_details(self, *_) -> None:
+        """Start the background fill for Type / JLC Stock / LCSC Params.
+
+        Guarded rather than allowed to raise, like the estimate: this runs after
+        every list rebuild, and an unreachable endpoint must cost three columns
+        rather than the window.
+        """
+        if self.detail_refresher is None:
+            return
+        try:
+            self.detail_refresher.refresh()
+        except Exception:  # noqa: BLE001 - the next reload retries
+            log.exception("Could not start the part detail lookup")
 
     def show_estimator_help(self, *_) -> None:
         """Show the estimator's assumptions and limitations."""
