@@ -35,7 +35,8 @@ import shiboken6
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QT_LOGGING_RULES", "qt.qpa.fonts=false")
 
-from PySide6.QtCore import QEventLoop, Qt, QTimer  # noqa: E402
+from PySide6.QtCore import QEvent, QEventLoop, QPointF, Qt, QTimer  # noqa: E402
+from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -751,6 +752,106 @@ def _click(window, row: int, column: str = "part") -> None:
         Qt.KeyboardModifier.NoModifier,
         window.results.visualRect(index).center(),
     )
+
+
+def _double_click(window, row: int, column: str = "part") -> None:
+    """Deliver the four events a desktop double-click sends, in order.
+
+    ``QTest.mouseDClick`` does not drive the view here — the results grid sees
+    nothing at all from it — and the order is the whole point: Qt sends
+    ``MouseButtonDblClick`` *in place of* the second press, so the first
+    release has already emitted ``clicked`` by the time anything knows this was
+    a double-click.
+    """
+    index = window.model.index(row, COLUMN_INDEX[column])
+    window.results.scrollTo(index)
+    settle(50)
+    viewport = window.results.viewport()
+    point = window.results.visualRect(index).center()
+
+    def send(kind):
+        QApplication.sendEvent(
+            viewport,
+            QMouseEvent(
+                kind,
+                QPointF(point),
+                viewport.mapToGlobal(QPointF(point)),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+
+    send(QEvent.Type.MouseButtonPress)
+    send(QEvent.Type.MouseButtonRelease)
+    # A real gap, so the collapse the first release triggers actually lays out
+    # before the second click arrives. That relayout is the bug: without it the
+    # test would pass on code that reads the row from wherever the cursor
+    # happens to be. Still far inside any double-click interval.
+    settle(120)
+    send(QEvent.Type.MouseButtonDblClick)
+    send(QEvent.Type.MouseButtonRelease)
+
+
+def test_double_clicking_an_open_row_assigns_the_part_that_was_aimed_at(
+    tmp_path, source
+):
+    """The reported bug: double-click was read as the gesture that collapses.
+
+    Both gestures start with a click on the row that is already open, so the
+    first release collapses the pane — and with the pane inline that drops the
+    placeholder row and renumbers everything below it. Asking the view what was
+    double-clicked then answers with a different part, or with the placeholder,
+    which is not a part at all. The row is read once, at the press.
+
+    The pane still collapses, and immediately: holding that back until a
+    double-click can be ruled out costs every collapse half a second and fixes
+    nothing this does not.
+    """
+    window = _inline_window(tmp_path, source, row=2)
+    window.references = ["R1"]
+    wanted = window.model.hits()[2].lcsc
+    assert window.detail.isVisible()
+
+    shown = []
+    assigned = []
+    original = window._set_details_shown
+    window._set_details_shown = lambda state: (shown.append(state), original(state))[1]
+    window.assign_requested.connect(lambda number, *_: assigned.append(number))
+
+    _double_click(window, 2)
+    settle(300)
+
+    assert assigned == [wanted], "the part aimed at should be the one assigned"
+    assert shown == [False], "collapsed once — not twice, and not reopened"
+    window._set_details_shown = original
+    window.close()
+
+
+def test_double_clicking_below_the_open_inline_row_assigns_what_was_under_it(
+    tmp_path, source
+):
+    """Where the renumbering actually bites, and it is not the row you clicked.
+
+    With the pane inline on row 2, its placeholder sits at row 3. Pressing on a
+    row *below* that opens the pane on the new row: the old placeholder is
+    dropped and a new one inserted further down, so everything in between moves
+    up one. The second click of the double lands on the same pixel and Qt
+    reports whatever is there now — one part too far down the list.
+    """
+    window = _inline_window(tmp_path, source, row=2)
+    window.references = ["R1"]
+    target_row = 8
+    wanted = window.model.hit_at(target_row).lcsc
+
+    assigned = []
+    window.assign_requested.connect(lambda number, *_: assigned.append(number))
+
+    _double_click(window, target_row)
+    settle(300)
+
+    assert assigned == [wanted]
+    window.close()
 
 
 def test_clicking_the_open_row_again_closes_the_pane(tmp_path, source):

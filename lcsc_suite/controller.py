@@ -715,12 +715,44 @@ class SuiteController(QObject):
         log.info("Copied %s", ", ".join(numbers))
 
     def paste_lcsc(self, references: Sequence[str]) -> None:
-        """Assign the LCSC number on the clipboard to the selected rows."""
+        """Assign the LCSC number on the clipboard to the selected rows.
+
+        A selection holding both numbered and unnumbered parts is filled in
+        rather than overwritten — see :meth:`_paste_targets`.
+        """
         number = sanitize_lcsc(QGuiApplication.clipboard().text())
         if not number:
             log.warning("The clipboard has no LCSC number in it")
             return
-        self.assign_number(references, number)
+        self.assign_number(self._paste_targets(references), number)
+
+    def _paste_targets(self, references: Sequence[str]) -> list:
+        """Which of ``references`` a paste should write to.
+
+        ``Auto-select alike`` turns picking one part into picking every part
+        that looks like it, and that selection routinely arrives here half
+        numbered: the one the number was copied from, and the identical ones
+        that still need it. Overwriting the whole selection makes copy-then-
+        paste a no-op on the row it was copied from and gives the gesture
+        nothing to show for itself, so a *mixed* selection fills the gaps and
+        leaves the rest alone.
+
+        A selection that is uniformly numbered, or uniformly not, is written in
+        full — deliberately, because replacing a number every row already has is
+        the other thing this menu entry is for, and that reading is unambiguous.
+        """
+        assigned = {view.reference for view in self.board.footprints() if view.lcsc}
+        gaps = [reference for reference in references if reference not in assigned]
+        if not gaps or len(gaps) == len(references):
+            return list(references)
+        log.info(
+            "Pasting onto the %d of %d selected parts that have no number; "
+            "%s already had one",
+            len(gaps),
+            len(references),
+            describe(sorted(set(references) - set(gaps))),
+        )
+        return gaps
 
     # -- Phase 5's windows --------------------------------------------------
     #

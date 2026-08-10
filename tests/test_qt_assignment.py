@@ -449,6 +449,60 @@ def test_a_copy_then_a_paste_round_trips(controller, board):
     assert _lcsc_on_board(board, UNASSIGNED) == _lcsc_on_board(board, ASSIGNED)
 
 
+def test_a_paste_carries_the_stock_figure_the_board_already_knows(controller, parts):
+    """The reported bug: a pasted number showed ``?``, a copied one a figure.
+
+    Stock describes the part number, not the footprint wearing it, so the row
+    the number was copied from is the answer for the row it was pasted onto.
+    Nothing else would supply one — the paste path has no figure to pass and
+    never asks the network.
+    """
+    parts.assign([ASSIGNED], "C1525", stock=4321)
+    QGuiApplication.clipboard().setText("C1525")
+
+    controller.paste_lcsc([UNASSIGNED])
+
+    assert _stored(parts, UNASSIGNED)["stock"] == 4321
+    assert _row(controller, UNASSIGNED).stock == 4321
+
+
+def test_a_number_nobody_has_a_figure_for_still_reads_as_unknown(controller, parts):
+    """``?`` has to keep meaning "nobody answered", not "we guessed 0"."""
+    QGuiApplication.clipboard().setText("C999999999")
+
+    controller.paste_lcsc([UNASSIGNED])
+
+    assert _row(controller, UNASSIGNED).stock is None
+
+
+def test_pasting_over_a_mixed_selection_fills_the_gaps(controller, board, parts):
+    """``Auto-select alike`` hands over the copied row and the ones needing it.
+
+    Overwriting the whole selection made copy-then-paste a no-op on the row it
+    came from; the point of the gesture is the rows that have nothing.
+    """
+    parts.assign([ASSIGNED], "C1525")
+    QGuiApplication.clipboard().setText("C1111")
+
+    controller.paste_lcsc([ASSIGNED, UNASSIGNED])
+
+    assert _lcsc_on_board(board, ASSIGNED) == "C1525", "the numbered row is left alone"
+    assert _lcsc_on_board(board, UNASSIGNED) == "C1111"
+
+
+def test_pasting_over_a_uniformly_numbered_selection_still_overwrites(
+    controller, board, parts
+):
+    """Replacing a number every row already has is the entry's other use."""
+    parts.assign([ASSIGNED, "R2"], "C1525")
+    QGuiApplication.clipboard().setText("C1111")
+
+    controller.paste_lcsc([ASSIGNED, "R2"])
+
+    assert _lcsc_on_board(board, ASSIGNED) == "C1111"
+    assert _lcsc_on_board(board, "R2") == "C1111"
+
+
 # --- mappings --------------------------------------------------------------
 
 
